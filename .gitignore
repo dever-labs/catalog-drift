@@ -1,0 +1,10 @@
+# Binaries
+/catalog-drift
+/dist/
+
+# Go build cache
+*.test
+*.out
+
+# IDE
+.vscode/settings.json
