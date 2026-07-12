@@ -134,6 +134,7 @@ func runCheck(args []string) error {
 		}
 
 		if *scanCode && contract.APISpec.Type == "openapi" {
+			// Code vs Backstage: catches endpoints removed from code without updating the catalog.
 			vs, err := engine.DiffCodeRoutes(contract.APISpec.Definition, codeRoutes)
 			if err != nil {
 				return fmt.Errorf("code diff %q: %w", apiName, err)
@@ -146,6 +147,23 @@ func runCheck(args []string) error {
 					Message:  v.Message,
 					Detail:   v.Path,
 				})
+			}
+
+			// Code vs local spec: catches endpoints updated in code but not in the local spec file.
+			// This is a warning only — the spec file may just be stale; Backstage is the authority.
+			if match != nil {
+				vs, err := engine.DiffCodeRoutes(string(match.Content), codeRoutes)
+				if err == nil {
+					for _, v := range vs {
+						findings = append(findings, reporter.Finding{
+							Kind:     "spec-drift",
+							APIName:  apiName,
+							Severity: "warning",
+							Message:  fmt.Sprintf("[local spec out of sync] %s", v.Message),
+							Detail:   v.Path,
+						})
+					}
+				}
 			}
 		}
 	}
