@@ -164,7 +164,94 @@ Severity: SeverityWarning,
 return violations, nil
 }
 
-// ExtractEndpoints returns all path+method pairs from an OpenAPI contract definition.
+// DiffGRPCCode compares the gRPC methods declared in the Backstage-registered
+// proto against the methods actually implemented in the source code.
+//
+// It extracts expected services/methods by parsing the contract proto, then
+// scans the source directory for generated gRPC stub files and implementation
+// patterns across Go, Python, .NET, and Java/Kotlin.
+func (e *Engine) DiffGRPCCode(contractDef, sourceDir string) ([]Violation, error) {
+	// Parse contract proto → expected services + methods.
+	fd, err := parseProto("contract.proto", contractDef)
+	if err != nil {
+		return nil, fmt.Errorf("parse contract proto: %w", err)
+	}
+	expected := make(map[string]map[string]bool) // service → set of methods
+	for _, svc := range fd.GetService() {
+		svcName := svc.GetName()
+		expected[svcName] = make(map[string]bool)
+		for _, m := range svc.GetMethod() {
+			expected[svcName][m.GetName()] = true
+		}
+	}
+
+	// Scan code → implemented services + methods.
+	scanner := codescanner.NewGRPCScanner(sourceDir)
+	found, err := scanner.Scan()
+	if err != nil {
+		return nil, fmt.Errorf("scan source for gRPC implementations: %w", err)
+	}
+	implemented := make(map[string]map[string][]codescanner.GRPCMethod)
+	for _, m := range found {
+		if implemented[m.Service] == nil {
+			implemented[m.Service] = make(map[string][]codescanner.GRPCMethod)
+		}
+		implemented[m.Service][m.Method] = append(implemented[m.Service][m.Method], m)
+	}
+
+	var violations []Violation
+
+	// Contract methods missing from code.
+	for svc, methods := range expected {
+		implMethods, svcFound := implemented[svc]
+		if !svcFound {
+			violations = append(violations, Violation{
+				Rule:     RuleMissingRPCMethod,
+				Path:     svc,
+				Message:  fmt.Sprintf("gRPC service %q is declared in the contract but no implementation was found in the code", svc),
+				Severity: SeverityError,
+			})
+			continue
+		}
+		for method := range methods {
+			if _, ok := implMethods[method]; !ok {
+				violations = append(violations, Violation{
+					Rule:     RuleMissingRPCMethod,
+					Path:     svc + "." + method,
+					Message:  fmt.Sprintf("rpc %q (service %q) is declared in the contract but not implemented in the code", method, svc),
+					Severity: SeverityError,
+				})
+			}
+		}
+	}
+
+	// Methods implemented in code but not in contract.
+	for svc, methods := range implemented {
+		contractMethods, svcInContract := expected[svc]
+		if !svcInContract {
+			// Whole service not in contract — flag at service level.
+			violations = append(violations, Violation{
+				Rule:     RuleUndeclaredRPCMethod,
+				Path:     svc,
+				Message:  fmt.Sprintf("gRPC service %q is implemented in the code but not declared in the Backstage contract — register it or update the registered spec", svc),
+				Severity: SeverityWarning,
+			})
+			continue
+		}
+		for method := range methods {
+			if !contractMethods[method] {
+				violations = append(violations, Violation{
+					Rule:     RuleUndeclaredRPCMethod,
+					Path:     svc + "." + method,
+					Message:  fmt.Sprintf("rpc %q (service %q) is implemented in the code but not declared in the contract — update the registered spec in Backstage", method, svc),
+					Severity: SeverityWarning,
+				})
+			}
+		}
+	}
+
+	return violations, nil
+}
 // Returns nil for non-OpenAPI types without error.
 func ExtractEndpoints(contractType, contractDef string) ([]Endpoint, error) {
 if contractType != "openapi" {

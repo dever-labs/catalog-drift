@@ -168,6 +168,24 @@ func runCheck(args []string) error {
 				}
 			}
 		}
+
+		if *scanCode && contract.APISpec.Type == "grpc" {
+			// Code vs Backstage proto: scans source for implemented gRPC methods and
+			// compares against the contract. Works across Go, Python, .NET, Java.
+			vs, err := engine.DiffGRPCCode(contract.APISpec.Definition, absSource)
+			if err != nil {
+				return fmt.Errorf("grpc code diff %q: %w", apiName, err)
+			}
+			for _, v := range vs {
+				findings = append(findings, reporter.Finding{
+					Kind:     "code-drift",
+					APIName:  apiName,
+					Severity: string(v.Severity),
+					Message:  v.Message,
+					Detail:   v.Path,
+				})
+			}
+		}
 	}
 
 	if err := reporter.Write(findings, *component, outFormat, os.Stdout); err != nil {
