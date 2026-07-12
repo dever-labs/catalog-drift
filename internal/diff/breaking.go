@@ -2,7 +2,6 @@ package diff
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/oasdiff/oasdiff/checker"
@@ -91,22 +90,9 @@ func diffBreakingAsyncAPI(oldDef string, newContent []byte) ([]Violation, error)
 
 // ── gRPC breaking diff ────────────────────────────────────────────────────────
 
+// diffBreakingGRPC detects breaking changes between an old (baseline) and new
+// proto definition. Delegates to diffGRPC — the same proto-to-proto comparison
+// used for contract drift, but here old=contract and new=local.
 func diffBreakingGRPC(oldDef string, newContent []byte) ([]Violation, error) {
-	oldMethods := extractRPCMethods(oldDef)
-	newMethods := extractRPCMethods(string(newContent))
-
-	var vs []Violation
-	for key, service := range oldMethods {
-		if _, ok := newMethods[key]; !ok {
-			parts := strings.SplitN(key, ".", 2)
-			method := parts[len(parts)-1]
-			vs = append(vs, Violation{
-				Rule:     RuleMissingRPCMethod,
-				Path:     key,
-				Message:  fmt.Sprintf("rpc method %q (service %q) was removed — existing consumers will break", method, service),
-				Severity: SeverityError,
-			})
-		}
-	}
-	return vs, nil
+	return diffGRPC(oldDef, newContent)
 }

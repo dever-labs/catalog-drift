@@ -3,41 +3,34 @@ package diff
 import (
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 
 	"github.com/jhump/protoreflect/desc/protoparse"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
-// diffGRPC compares two proto definitions at the service, method, and
-// message-field level using a proper proto parser. Gracefully falls back to
-// the regex approach when the parser cannot handle the input (e.g. protos that
-// import external well-known types without providing them).
+// diffGRPC compares the Backstage-registered proto against the local proto.
+// Both are proto files (the registered one was generated from code when last
+// published to Backstage), so this is a direct proto-to-proto comparison.
 func diffGRPC(contractDef string, localContent []byte) ([]Violation, error) {
-	contractFD, contractErr := parseProto("contract.proto", contractDef)
-	localFD, localErr := parseProto("local.proto", string(localContent))
-
-	// If either parse fails, fall back to the lighter regex approach so the
-	// tool still produces useful output rather than a parse error.
-	if contractErr != nil || localErr != nil {
-		return diffGRPCRegex(contractDef, string(localContent))
+	contractFD, err := parseProto("contract.proto", contractDef)
+	if err != nil {
+		return nil, fmt.Errorf("parse contract proto: %w", err)
 	}
-
+	localFD, err := parseProto("local.proto", string(localContent))
+	if err != nil {
+		return nil, fmt.Errorf("parse local proto: %w", err)
+	}
 	return diffProtoDescriptors(contractFD, localFD), nil
 }
 
 // parseProto parses a proto source string into a FileDescriptorProto.
-// It uses ParseFilesButDoNotLink so that external imports are not required.
+// ParseFilesButDoNotLink is used so that import resolution is skipped —
+// the proto file itself is what matters, not its transitive dependencies.
 func parseProto(filename, content string) (*descriptorpb.FileDescriptorProto, error) {
 	p := protoparse.Parser{
 		Accessor: func(fn string) (io.ReadCloser, error) {
-			if fn == filename {
-				return io.NopCloser(strings.NewReader(content)), nil
-			}
-			// Return empty content for unresolvable imports so parsing can
-			// continue without them rather than failing entirely.
-			return io.NopCloser(strings.NewReader("")), nil
+			return io.NopCloser(strings.NewReader(content)), nil
 		},
 	}
 	fds, err := p.ParseFilesButDoNotLink(filename)
@@ -291,69 +284,3 @@ func labelName(l descriptorpb.FieldDescriptorProto_Label) string {
 	return strings.ToLower(strings.TrimPrefix(l.String(), "LABEL_"))
 }
 
-// ── Regex fallback ────────────────────────────────────────────────────────────
-
-var (
-	rpcMethodRe = regexp.MustCompile(`\brpc\s+(\w+)\s*\(`)
-	serviceRe   = regexp.MustCompile(`\bservice\s+(\w+)\s*\{`)
-)
-
-// diffGRPCRegex is the original lightweight regex-based diff, used as a fallback
-// when the proto parser cannot handle the input (e.g. missing imports).
-func diffGRPCRegex(contractDef, localContent string) ([]Violation, error) {
-	contractMethods := extractRPCMethods(contractDef)
-	localMethods := extractRPCMethods(localContent)
-
-	var violations []Violation
-	for key, service := range contractMethods {
-		if _, ok := localMethods[key]; !ok {
-			parts := strings.SplitN(key, ".", 2)
-			method := parts[len(parts)-1]
-			violations = append(violations, Violation{
-				Rule:     RuleMissingRPCMethod,
-				Path:     key,
-				Message:  fmt.Sprintf("rpc method %q (service %q) is declared in the contract but missing from the local proto", method, service),
-				Severity: SeverityError,
-			})
-		}
-	}
-	for key, service := range localMethods {
-		if _, ok := contractMethods[key]; !ok {
-			parts := strings.SplitN(key, ".", 2)
-			method := parts[len(parts)-1]
-			violations = append(violations, Violation{
-				Rule:     RuleUndeclaredRPCMethod,
-				Path:     key,
-				Message:  fmt.Sprintf("rpc method %q (service %q) exists in the local proto but is not declared in the contract", method, service),
-				Severity: SeverityWarning,
-			})
-		}
-	}
-	return violations, nil
-}
-
-// extractRPCMethods returns a map of "ServiceName.MethodName" → ServiceName.
-func extractRPCMethods(content string) map[string]string {
-	result := make(map[string]string)
-	serviceMatches := serviceRe.FindAllStringSubmatchIndex(content, -1)
-
-	for i, sm := range serviceMatches {
-		serviceName := content[sm[2]:sm[3]]
-		blockStart := sm[0]
-		blockEnd := len(content)
-		if i+1 < len(serviceMatches) {
-			blockEnd = serviceMatches[i+1][0]
-		}
-		block := content[blockStart:blockEnd]
-		for _, mm := range rpcMethodRe.FindAllStringSubmatch(block, -1) {
-			key := serviceName + "." + mm[1]
-			result[key] = serviceName
-		}
-	}
-	if len(serviceMatches) == 0 {
-		for _, mm := range rpcMethodRe.FindAllStringSubmatch(content, -1) {
-			result["unknown."+mm[1]] = "unknown"
-		}
-	}
-	return result
-}
