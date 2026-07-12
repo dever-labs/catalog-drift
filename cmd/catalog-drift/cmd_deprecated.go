@@ -1,150 +1,235 @@
 package main
 
 import (
-	"context"
-	"flag"
-	"fmt"
-	"os"
-	"path/filepath"
-	"time"
+"context"
+"flag"
+"fmt"
+"os"
+"path/filepath"
+"time"
 
-	"github.com/dever-labs/catalog-drift/internal/diff"
-	"github.com/dever-labs/catalog-drift/internal/reporter"
-	"github.com/dever-labs/catalog-drift/internal/usage"
+"github.com/dever-labs/catalog-drift/internal/diff"
+"github.com/dever-labs/catalog-drift/internal/reporter"
+"github.com/dever-labs/catalog-drift/internal/usage"
 )
 
-// runDeprecated scans the caller's source tree for calls to any deprecated API
-// found in the Backstage catalog. If --component is provided, only APIs consumed
-// by that component are checked; otherwise all deprecated APIs in the catalog
-// are used as the reference set.
+// runDeprecated runs three checks:
+//
+//  1. Deprecated usage — code calls an endpoint marked deprecated in the catalog.
+//     Severity escalates from warning to error after --error-after.
+//
+//  2. Removed API — a declared consumesApis entry no longer exists in the catalog.
+//     Always an error: you depend on something that is gone.
+//
+//  3. Undeclared consumption — code calls an endpoint from a catalog API that is
+//     not declared in your consumesApis. Warning: you have a hidden dependency.
+//
+// Checks 2 and 3 require --component. Check 1 runs with or without it.
 func runDeprecated(args []string) error {
-	fs := flag.NewFlagSet("deprecated", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+fs := flag.NewFlagSet("deprecated", flag.ContinueOnError)
+fs.SetOutput(os.Stderr)
 
-	backstageURL := fs.String("backstage-url", "", "Backstage instance URL (required)")
-	component    := fs.String("component", "", "Component name — if set, only consumed APIs are checked")
-	namespace    := fs.String("namespace", "default", "Backstage namespace (used with --component)")
-	token        := fs.String("token", "", "Backstage Bearer token (env: BACKSTAGE_TOKEN)")
-	source       := fs.String("source", ".", "Source directory to scan for deprecated usage")
-	format       := fs.String("format", "text", "Output format: text, json, junit")
-	failOnWarn   := fs.Bool("fail-on-warn", false, "Exit 1 on warnings as well as errors")
+backstageURL := fs.String("backstage-url", "", "Backstage instance URL (required)")
+component    := fs.String("component", "", "Component name — scopes checks to declared consumesApis")
+namespace    := fs.String("namespace", "default", "Backstage namespace")
+token        := fs.String("token", "", "Backstage Bearer token (env: BACKSTAGE_TOKEN)")
+source       := fs.String("source", ".", "Source directory to scan")
+format       := fs.String("format", "text", "Output format: text, json, junit")
+errorAfter   := fs.String("error-after", "", "Grace period before deprecated usage becomes an error (e.g. 90d)")
+failOnWarn   := fs.Bool("fail-on-warn", false, "Exit 1 on warnings as well as errors")
 
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return nil
-		}
-		return err
-	}
-	if *backstageURL == "" {
-		return fmt.Errorf("--backstage-url is required")
-	}
+if err := fs.Parse(args); err != nil {
+if err == flag.ErrHelp {
+return nil
+}
+return err
+}
+if *backstageURL == "" {
+return fmt.Errorf("--backstage-url is required")
+}
 
-	outFormat, err := reporter.ParseFormat(*format)
-	if err != nil {
-		return err
-	}
+outFormat, err := reporter.ParseFormat(*format)
+if err != nil {
+return err
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+var gracePeriod time.Duration
+if *errorAfter != "" {
+gracePeriod, err = parseDuration(*errorAfter)
+if err != nil {
+return fmt.Errorf("--error-after: %w", err)
+}
+}
 
-	client := newBackstageClient(*backstageURL, *token, os.Getenv("BACKSTAGE_TOKEN"))
+absSource, err := filepath.Abs(*source)
+if err != nil {
+return fmt.Errorf("resolve source path: %w", err)
+}
 
-	type contractEntry struct {
-		name       string
-		apiType    string
-		definition string
-	}
+ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+defer cancel()
 
-	var deprecatedEntries []contractEntry
+client := newBackstageClient(*backstageURL, *token, os.Getenv("BACKSTAGE_TOKEN"))
 
-	if *component != "" {
-		// Only check APIs this component declares it consumes.
-		consumed, err := client.FetchConsumedContracts(ctx, *component, *namespace)
-		if err != nil {
-			return fmt.Errorf("fetch consumed contracts: %w", err)
-		}
-		for _, c := range consumed {
-			if c.Deprecation.IsDeprecated {
-				deprecatedEntries = append(deprecatedEntries, contractEntry{
-					name:       c.Entity.Metadata.Name,
-					apiType:    c.APISpec.Type,
-					definition: c.APISpec.Definition,
-				})
-			}
-		}
-	} else {
-		// Catalog-wide: find all deprecated APIs regardless of component.
-		all, err := client.FetchDeprecatedContracts(ctx)
-		if err != nil {
-			return fmt.Errorf("fetch deprecated contracts: %w", err)
-		}
-		for _, c := range all {
-			deprecatedEntries = append(deprecatedEntries, contractEntry{
-				name:       c.Entity.Metadata.Name,
-				apiType:    c.APISpec.Type,
-				definition: c.APISpec.Definition,
-			})
-		}
-	}
+var findings []reporter.Finding
 
-	if len(deprecatedEntries) == 0 {
-		fmt.Fprintln(os.Stderr, "No deprecated APIs found.")
-		return nil
-	}
+// ── Check 2: Removed APIs ─────────────────────────────────────────────────
+// Any API declared in consumesApis that no longer exists in the catalog.
+// This is always an error — you have a hard dependency on something gone.
+if *component != "" {
+statuses, err := client.FetchConsumedAPIStatuses(ctx, *component, *namespace)
+if err != nil {
+return fmt.Errorf("fetch consumed API statuses: %w", err)
+}
+for _, s := range statuses {
+if s.Removed {
+findings = append(findings, reporter.Finding{
+Kind:     "removed-api",
+APIName:  s.Name,
+Severity: "error",
+Message: fmt.Sprintf(
+"API %q is declared in consumesApis but no longer exists in the catalog — remove the dependency or contact the owning team",
+s.Name,
+),
+})
+}
+}
+}
 
-	// Build deprecated-path → contract-name map.
-	deprecatedPaths := make(map[string]string)
-	for _, e := range deprecatedEntries {
-		if e.definition == "" {
-			continue
-		}
-		endpoints, err := diff.ExtractEndpoints(e.apiType, e.definition)
-		if err != nil {
-			return fmt.Errorf("extract endpoints from %q: %w", e.name, err)
-		}
-		for _, ep := range endpoints {
-			deprecatedPaths[ep.Path] = e.name
-		}
-	}
+// ── Check 1: Deprecated usage ─────────────────────────────────────────────
+// Code calls an endpoint the catalog has marked deprecated.
+var deprecatedPaths map[string]string // path → contract name
 
-	if len(deprecatedPaths) == 0 {
-		fmt.Fprintln(os.Stderr, "No deprecated API endpoints to check (definitions may be empty).")
-		return nil
-	}
+if *component != "" {
+// Scoped: only APIs this component declared it consumes.
+statuses, err := client.FetchConsumedAPIStatuses(ctx, *component, *namespace)
+if err != nil {
+return fmt.Errorf("fetch consumed API statuses: %w", err)
+}
+deprecatedPaths = make(map[string]string)
+for _, s := range statuses {
+if s.Removed || s.Contract == nil || !s.Contract.Deprecation.IsDeprecated {
+continue
+}
+endpoints, err := diff.ExtractEndpoints(s.Contract.APISpec.Type, s.Contract.APISpec.Definition)
+if err != nil {
+continue
+}
+for _, ep := range endpoints {
+deprecatedPaths[ep.Path] = s.Name
+}
+}
+} else {
+// Catalog-wide: all deprecated APIs.
+all, err := client.FetchDeprecatedContracts(ctx)
+if err != nil {
+return fmt.Errorf("fetch deprecated contracts: %w", err)
+}
+deprecatedPaths = make(map[string]string)
+for _, c := range all {
+endpoints, err := diff.ExtractEndpoints(c.APISpec.Type, c.APISpec.Definition)
+if err != nil {
+continue
+}
+for _, ep := range endpoints {
+deprecatedPaths[ep.Path] = c.Entity.Metadata.Name
+}
+}
+}
 
-	absSource, err := filepath.Abs(*source)
-	if err != nil {
-		return fmt.Errorf("resolve source path: %w", err)
-	}
+if len(deprecatedPaths) > 0 {
+usages, err := usage.New(absSource).Scan(deprecatedPaths)
+if err != nil {
+return fmt.Errorf("scan for deprecated usage: %w", err)
+}
+for _, u := range usages {
+sev := "warning"
+if gracePeriod == 0 {
+sev = "error"
+}
+findings = append(findings, reporter.Finding{
+Kind:     "deprecated-usage",
+APIName:  u.ContractName,
+Severity: sev,
+Message:  fmt.Sprintf("call to deprecated endpoint %q at %s:%d", u.DeprecatedPath, u.File, u.Line),
+Detail:   u.Context,
+})
+}
+}
 
-	usages, err := usage.New(absSource).Scan(deprecatedPaths)
-	if err != nil {
-		return fmt.Errorf("scan for deprecated usage: %w", err)
-	}
+// ── Check 3: Undeclared consumption ───────────────────────────────────────
+// Code calls an endpoint from a known catalog API that isn't in consumesApis.
+// Requires --component so we know what's declared.
+if *component != "" {
+// Fetch all catalog APIs to build a full endpoint → API name map.
+all, err := client.FetchAllContracts(ctx)
+if err != nil {
+return fmt.Errorf("fetch all contracts: %w", err)
+}
 
-	label := *component
-	if label == "" {
-		label = "catalog"
-	}
+// Build set of what the component already declared.
+statuses, err := client.FetchConsumedAPIStatuses(ctx, *component, *namespace)
+if err != nil {
+return fmt.Errorf("fetch consumed API statuses: %w", err)
+}
+declared := make(map[string]bool)
+for _, s := range statuses {
+declared[s.Name] = true
+}
 
-	var findings []reporter.Finding
-	for _, u := range usages {
-		findings = append(findings, reporter.Finding{
-			Kind:     "deprecated-usage",
-			APIName:  u.ContractName,
-			Severity: "warning",
-			Message:  fmt.Sprintf("call to deprecated endpoint %q at %s:%d", u.DeprecatedPath, u.File, u.Line),
-			Detail:   u.Context,
-		})
-	}
+// Also exclude the component's own provided APIs (not a consumption).
+ownContracts, _ := fetchContracts(ctx, client, *component, *namespace)
+for _, c := range ownContracts {
+declared[c.Entity.Metadata.Name] = true
+}
 
-	if err := reporter.Write(findings, label, outFormat, os.Stdout); err != nil {
-		return fmt.Errorf("write report: %w", err)
-	}
+// Map: endpoint path → catalog API name, excluding already-declared ones.
+undeclaredPaths := make(map[string]string)
+for _, c := range all {
+if declared[c.Entity.Metadata.Name] {
+continue
+}
+endpoints, err := diff.ExtractEndpoints(c.APISpec.Type, c.APISpec.Definition)
+if err != nil {
+continue
+}
+for _, ep := range endpoints {
+undeclaredPaths[ep.Path] = c.Entity.Metadata.Name
+}
+}
 
-	errors, warnings := countSeverities(findings)
-	if errors > 0 || (*failOnWarn && warnings > 0) {
-		os.Exit(exitViolations)
-	}
-	return nil
+if len(undeclaredPaths) > 0 {
+usages, err := usage.New(absSource).Scan(undeclaredPaths)
+if err != nil {
+return fmt.Errorf("scan for undeclared usage: %w", err)
+}
+for _, u := range usages {
+findings = append(findings, reporter.Finding{
+Kind:     "undeclared-consumption",
+APIName:  u.ContractName,
+Severity: "warning",
+Message: fmt.Sprintf(
+"code calls %q (from catalog API %q) but %q is not declared in consumesApis — add it to your Backstage component definition",
+u.DeprecatedPath, u.ContractName, u.ContractName,
+),
+Detail: fmt.Sprintf("%s:%d", u.File, u.Line),
+})
+}
+}
+}
+
+label := *component
+if label == "" {
+label = "catalog"
+}
+
+if err := reporter.Write(findings, label, outFormat, os.Stdout); err != nil {
+return fmt.Errorf("write report: %w", err)
+}
+
+errors, warnings := countSeverities(findings)
+if errors > 0 || (*failOnWarn && warnings > 0) {
+os.Exit(exitViolations)
+}
+return nil
 }

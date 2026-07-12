@@ -177,6 +177,11 @@ func backstageMux(componentJSON, apiJSON string) *http.ServeMux {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, apiJSON)
 	})
+	// Catalog-wide entity list (FetchAllContracts, FetchDeprecatedContracts).
+	mux.HandleFunc("/api/catalog/entities", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, "[%s]", apiJSON)
+	})
 	return mux
 }
 
@@ -372,7 +377,94 @@ func TestRunUsage_NoDeprecatedAPIs(t *testing.T) {
 	}
 }
 
-// ── End-to-end: runConsumers ──────────────────────────────────────────────────
+func TestRunDeprecated_RemovedAPI(t *testing.T) {
+	// Component declares consumesApi "gone-api", but that API returns 404.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/catalog/entities/by-name/component/default/my-service", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"apiVersion":"backstage.io/v1alpha1","kind":"Component",
+			"metadata":{"name":"my-service","namespace":"default"},
+			"spec":{"type":"service"},
+			"relations":[{"type":"consumesApi","targetRef":"api:default/gone-api","target":{"kind":"api","namespace":"default","name":"gone-api"}}]
+		}`)
+	})
+	mux.HandleFunc("/api/catalog/entities/by-name/api/default/gone-api", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/api/catalog/entities", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// FetchConsumedAPIStatuses should surface "gone-api" as removed.
+	client := newBackstageClient(srv.URL, "", "")
+	statuses, err := client.FetchConsumedAPIStatuses(context.Background(), "my-service", "default")
+	if err != nil {
+		t.Fatalf("FetchConsumedAPIStatuses: %v", err)
+	}
+	if len(statuses) != 1 || !statuses[0].Removed {
+		t.Errorf("expected 1 removed API, got %+v", statuses)
+	}
+	if statuses[0].Name != "gone-api" {
+		t.Errorf("expected gone-api, got %q", statuses[0].Name)
+	}
+}
+
+func TestRunDeprecated_UndeclaredConsumption(t *testing.T) {
+	// Component declares NO consumesApis, but code calls /orders which is in the catalog.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/catalog/entities/by-name/component/default/my-service", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"apiVersion":"backstage.io/v1alpha1","kind":"Component",
+			"metadata":{"name":"my-service","namespace":"default"},
+			"spec":{"type":"service"},
+			"relations":[]
+		}`)
+	})
+	// FetchAllContracts returns orders-api.
+	mux.HandleFunc("/api/catalog/entities", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `[{
+			"apiVersion":"backstage.io/v1alpha1","kind":"API",
+			"metadata":{"name":"orders-api","namespace":"default"},
+			"spec":{"type":"openapi","lifecycle":"production","definition":%q},
+			"relations":[]
+		}]`, minimalOpenAPI)
+	})
+	// fetchContracts (providesApi) for own APIs — returns nothing.
+	mux.HandleFunc("/api/catalog/entities/by-name/component/default/my-service/provides", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Write Go source that calls /orders — should be flagged as undeclared.
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "client.go"), []byte(`
+package client
+const ordersURL = "/orders"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runDeprecated([]string{
+		"--backstage-url", srv.URL,
+		"--component", "my-service",
+		"--source", srcDir,
+	})
+	if err != nil {
+		t.Fatalf("unexpected tool error: %v", err)
+	}
+}
+
+
 
 func TestRunConsumers_MissingFlags(t *testing.T) {
 	cases := []struct {

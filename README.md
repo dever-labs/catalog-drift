@@ -15,7 +15,7 @@ See **[How it works](docs/how-it-works.md)** for the full flow and **[Pipeline i
 | Command | Who runs it | What it does |
 |---|---|---|
 | `check` | Producer, every push | Diffs local spec files and/or code routes against the registered Backstage contract |
-| `deprecated` | Consumer, every push/PR | Scans source code for calls to APIs marked deprecated in the catalog |
+| `deprecated` | Consumer, every push/PR | Scans source code for deprecated calls, undeclared API dependencies, and removed APIs |
 | `consumers` | Producer, pre-sunset | Lists catalog components that declared they consume a deprecated API |
 
 ## Quick start

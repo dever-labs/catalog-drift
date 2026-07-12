@@ -205,6 +205,65 @@ func (c *Client) FetchConsumedContracts(ctx context.Context, component, namespac
 	return contracts, nil
 }
 
+// ConsumedAPIStatus describes the catalog status of one declared consumed API.
+type ConsumedAPIStatus struct {
+	Name    string
+	Removed bool     // true when the API no longer exists in the catalog
+	Contract *Contract // nil when Removed is true
+}
+
+// FetchConsumedAPIStatuses returns the catalog status of every API a component
+// declares it consumes. Removed APIs (404 in the catalog) are flagged rather
+// than returning an error, so callers can report them as findings.
+func (c *Client) FetchConsumedAPIStatuses(ctx context.Context, component, namespace string) ([]ConsumedAPIStatus, error) {
+	if namespace == "" {
+		namespace = "default"
+	}
+	comp, err := c.fetchEntity(ctx, "component", namespace, component)
+	if err != nil {
+		return nil, fmt.Errorf("fetch component %q: %w", component, err)
+	}
+
+	var statuses []ConsumedAPIStatus
+	for _, rel := range comp.Relations {
+		if rel.Type != "consumesApi" {
+			continue
+		}
+		target := resolveTarget(rel, "api", "default")
+		apiEntity, err := c.fetchEntity(ctx, target.Kind, target.Namespace, target.Name)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				statuses = append(statuses, ConsumedAPIStatus{Name: target.Name, Removed: true})
+				continue
+			}
+			return nil, fmt.Errorf("fetch api %q: %w", rel.TargetRef, err)
+		}
+		contract, err := buildContract(apiEntity)
+		if err != nil {
+			return nil, fmt.Errorf("parse spec for %q: %w", rel.TargetRef, err)
+		}
+		statuses = append(statuses, ConsumedAPIStatus{Name: target.Name, Contract: &contract})
+	}
+	return statuses, nil
+}
+
+// FetchAllContracts returns all API entities currently registered in the catalog.
+func (c *Client) FetchAllContracts(ctx context.Context) ([]Contract, error) {
+	var entities []Entity
+	if err := c.get(ctx, "/api/catalog/entities?filter=kind=API", &entities); err != nil {
+		return nil, fmt.Errorf("fetch all contracts: %w", err)
+	}
+	contracts := make([]Contract, 0, len(entities))
+	for i := range entities {
+		contract, err := buildContract(&entities[i])
+		if err != nil {
+			continue
+		}
+		contracts = append(contracts, contract)
+	}
+	return contracts, nil
+}
+
 // FetchDeprecatedContracts returns all API entities in the catalog whose
 // lifecycle is "deprecated", across all components and namespaces.
 func (c *Client) FetchDeprecatedContracts(ctx context.Context) ([]Contract, error) {

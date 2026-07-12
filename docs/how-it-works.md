@@ -92,3 +92,16 @@ An API is considered deprecated if `spec.lifecycle` is `deprecated`, or if `depr
 ## Output formats
 
 All subcommands support `--format`: `text` (default), `json`, `junit`.
+
+---
+
+## Finding kinds (deprecated subcommand)
+
+| Kind | Severity | Meaning |
+|---|---|---|
+| `deprecated-usage` | warning → error | Code calls an endpoint the catalog marks deprecated |
+| `removed-api` | error | An API in your `consumesApis` no longer exists in the catalog |
+| `undeclared-consumption` | warning | Code calls a catalog API not declared in `consumesApis` |
+
+`removed-api` is always an error — you have a hard dependency on something gone.  
+`undeclared-consumption` is a warning — add the API to your `consumesApis` in Backstage so you get notified of future deprecations.
