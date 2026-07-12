@@ -10,16 +10,13 @@ import (
 
 	"github.com/dever-labs/catalog-drift/internal/diff"
 	"github.com/dever-labs/catalog-drift/internal/reporter"
-	"github.com/dever-labs/catalog-drift/internal/scanner"
+	codescanner "github.com/dever-labs/catalog-drift/internal/scanner/code"
 )
 
-// runBreaking fetches the currently-registered spec from Backstage and diffs it
-// against a proposed spec file (e.g. the version in a PR). Fails if the proposed
-// change would break existing consumers — removed endpoints, incompatible schema
-// changes, new required fields, etc.
-//
-// Use `catalog-drift check` to detect implementation drift (code vs spec).
-// Use `catalog-drift breaking` on PRs to gate spec changes.
+// runBreaking fetches the registered spec from Backstage (the contract consumers
+// depend on) and compares it against what is actually implemented in the code.
+// Any endpoint present in Backstage but missing from the code is a breaking change
+// — the contract has been violated without updating the catalog.
 func runBreaking(args []string) error {
 	fs := flag.NewFlagSet("breaking", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -28,7 +25,7 @@ func runBreaking(args []string) error {
 	component    := fs.String("component", "", "Component name in Backstage (required)")
 	namespace    := fs.String("namespace", "default", "Backstage namespace")
 	token        := fs.String("token", "", "Backstage Bearer token (env: BACKSTAGE_TOKEN)")
-	specPath     := fs.String("spec", "", "Path to the proposed spec file (required)")
+	source       := fs.String("source", ".", "Source directory to scan for implemented routes (required)")
 	format       := fs.String("format", "text", "Output format: text, json, junit")
 	failOnWarn   := fs.Bool("fail-on-warn", false, "Exit 1 on warnings as well as errors")
 
@@ -44,32 +41,31 @@ func runBreaking(args []string) error {
 	if *component == "" {
 		return fmt.Errorf("--component is required")
 	}
-	// Treat empty string (e.g. from action.yml passing --spec=) as not provided.
-	if *specPath == "" {
-		return fmt.Errorf("--spec is required: provide the path to your proposed spec file")
-	}
 
 	outFormat, err := reporter.ParseFormat(*format)
 	if err != nil {
 		return err
 	}
 
-	absSpec, err := filepath.Abs(*specPath)
+	absSource, err := filepath.Abs(*source)
 	if err != nil {
-		return fmt.Errorf("resolve spec path: %w", err)
-	}
-	specContent, err := os.ReadFile(absSpec)
-	if err != nil {
-		return fmt.Errorf("read spec file: %w", err)
+		return fmt.Errorf("resolve source path: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	// Fetch what Backstage says this component provides.
 	client := newBackstageClient(*backstageURL, *token, os.Getenv("BACKSTAGE_TOKEN"))
 	contracts, err := fetchContracts(ctx, client, *component, *namespace)
 	if err != nil {
 		return err
+	}
+
+	// Scan what the code actually implements.
+	codeRoutes, err := codescanner.New(absSource).Scan()
+	if err != nil {
+		return fmt.Errorf("scan code %s: %w", absSource, err)
 	}
 
 	engine := diff.New()
@@ -80,16 +76,10 @@ func runBreaking(args []string) error {
 			continue
 		}
 		apiName := contract.Entity.Metadata.Name
-		apiType := contract.APISpec.Type
 
-		localSpec := scanner.SpecFile{
-			Path:    absSpec,
-			Type:    scanner.Type(apiType),
-			Content: specContent,
-		}
-		vs, err := engine.DiffBreaking(apiType, contract.APISpec.Definition, localSpec)
+		vs, err := engine.DiffCodeRoutes(contract.APISpec.Definition, codeRoutes)
 		if err != nil {
-			continue // unsupported type — skip
+			return fmt.Errorf("diff %q: %w", apiName, err)
 		}
 		for _, v := range vs {
 			findings = append(findings, reporter.Finding{

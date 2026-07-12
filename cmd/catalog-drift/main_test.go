@@ -560,9 +560,8 @@ name string
 args []string
 want string
 }{
-{"no backstage-url", []string{"--component", "svc", "--spec", "api.yaml"}, "--backstage-url"},
-{"no component", []string{"--backstage-url", "http://localhost", "--spec", "api.yaml"}, "--component"},
-{"no spec", []string{"--backstage-url", "http://localhost", "--component", "svc"}, "--spec"},
+{"no backstage-url", []string{"--component", "svc"}, "--backstage-url"},
+{"no component", []string{"--backstage-url", "http://localhost"}, "--component"},
 }
 for _, tc := range cases {
 t.Run(tc.name, func(t *testing.T) {
@@ -581,22 +580,30 @@ apiEntityJSON("orders-api", "production", minimalOpenAPI),
 ))
 defer srv.Close()
 
-specFile := filepath.Join(t.TempDir(), "orders-api.yaml")
-if err := os.WriteFile(specFile, []byte(minimalOpenAPI), 0o644); err != nil {
-t.Fatal(err)
+srcDir := t.TempDir()
+// Write a Go file that implements GET /orders — matches minimalOpenAPI.
+goFile := filepath.Join(srcDir, "main.go")
+if err := os.WriteFile(goFile, []byte(`package main
+import "github.com/gin-gonic/gin"
+func main() {
+	r := gin.New()
+	r.GET("/orders", func(c *gin.Context) {})
+}
+`), 0o644); err != nil {
+	t.Fatal(err)
 }
 
 err := runBreaking([]string{
 "--backstage-url", srv.URL,
 "--component", "my-service",
-"--spec", specFile,
+"--source", srcDir,
 })
 if err != nil {
 t.Fatalf("runBreaking: %v", err)
 }
 }
 
-func TestRunBreaking_MissingSpecFile(t *testing.T) {
+func TestRunBreaking_MissingSourceDir(t *testing.T) {
 srv := httptest.NewServer(backstageMux(
 componentEntityJSON("orders-api"),
 apiEntityJSON("orders-api", "production", minimalOpenAPI),
@@ -606,9 +613,9 @@ defer srv.Close()
 err := runBreaking([]string{
 "--backstage-url", srv.URL,
 "--component", "my-service",
-"--spec", "/no/such/file.yaml",
+"--source", "/no/such/dir",
 })
 if err == nil {
-t.Error("expected error for missing spec file")
+t.Error("expected error for missing source directory")
 }
 }

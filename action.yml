@@ -42,9 +42,8 @@ inputs:
     default: ''
   spec:
     description: |
-      Path to proposed spec file (breaking subcommand — spec-based check).
-      Diffs your proposed spec against the currently registered spec in Backstage via oasdiff.
-      Omit to rely solely on code scanning (--source must then be set).
+      Path to proposed spec file (check subcommand only — for local spec scanning).
+      Not used by breaking; that subcommand fetches the contract directly from Backstage.
     required: false
     default: ''
   format:
