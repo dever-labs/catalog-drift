@@ -1,32 +1,32 @@
 # catalog-drift
 
-A CLI tool that owns the full API contract and deprecation lifecycle, using [Backstage](https://backstage.io) as the single source of truth.
+A CLI tool for API contract drift and deprecation detection, using [Backstage](https://backstage.io) as the single source of truth.
 
+Designed to drop into a GitHub Actions or GitLab CI pipeline to catch contract violations and deprecated API usage before they reach production.
 
 ## The core idea
 
-**Backstage is the authority.** Your code is compared directly against what is registered in the catalog. No spec files are checked into a special location. No separate diff snapshots. If your code diverges from what Backstage says you provide, or if you call something Backstage says is deprecated, the pipeline fails.
+**Backstage is the authority.** Your code is compared directly against what is registered in the catalog — no spec snapshots, no baseline files. If your code diverges from what Backstage says you provide, or if you call something Backstage says is deprecated, the pipeline fails.
 
-See **[How it works](docs/how-it-works.md)** for the full flow, and **[Pipeline integration](docs/pipeline.md)** for copy-paste GitHub Actions and GitLab CI examples.
+See **[How it works](docs/how-it-works.md)** for the full flow and **[Pipeline integration](docs/pipeline.md)** for copy-paste GitHub Actions and GitLab CI examples.
 
-## Subcommands
+## Commands
 
-| Command | Who runs it | What it checks |
+| Command | Who runs it | What it does |
 |---|---|---|
-| `check` | Producer, on every push | Local spec files and/or code routes vs registered Backstage contract |
-| `breaking` | Producer, on every push/PR | Code routes vs registered Backstage contract — fails if a registered endpoint is gone from code |
-| `deprecated` | Consumer, on every push/PR | Source code for calls to any API marked deprecated in the catalog |
-| `consumers` | Producer, before sunset | Who is actively calling a deprecated endpoint (Prometheus or log file) |
-
+| `check` | Producer, every push | Diffs local spec files and/or code routes against the registered Backstage contract |
+| `deprecated` | Consumer, every push/PR | Scans source code for calls to APIs marked deprecated in the catalog |
+| `consumers` | Producer, pre-sunset | Lists catalog components that declared they consume a deprecated API |
 
 ## Quick start
 
 ```bash
-# Producer: did my code break the registered contract?
-catalog-drift breaking \
+# Producer: does my code match the registered contract?
+catalog-drift check \
   --backstage-url https://backstage.example.com \
   --component payment-service \
-  --source ./src
+  --source ./src \
+  --scan-code
 
 # Consumer: am I calling anything deprecated?
 catalog-drift deprecated \
@@ -38,16 +38,27 @@ catalog-drift deprecated \
 ## GitHub Actions
 
 ```yaml
+# Producer — check contract on every push
 - uses: dever-labs/catalog-drift@main
   with:
-    subcommand: breaking
+    subcommand: check
     backstage-url: ${{ secrets.BACKSTAGE_URL }}
     component: payment-service
     source: ./src
+    scan-code: 'true'
+    token: ${{ secrets.BACKSTAGE_TOKEN }}
+
+# Consumer — fail on deprecated API usage
+- uses: dever-labs/catalog-drift@main
+  with:
+    subcommand: deprecated
+    backstage-url: ${{ secrets.BACKSTAGE_URL }}
+    source: ./src
+    error-after: 90d
     token: ${{ secrets.BACKSTAGE_TOKEN }}
 ```
 
-See [docs/pipeline.md](docs/pipeline.md) for full pipeline examples covering all subcommands.
+See [docs/pipeline.md](docs/pipeline.md) for full examples covering all commands.
 
 ## Supported contract types
 
@@ -58,14 +69,6 @@ See [docs/pipeline.md](docs/pipeline.md) for full pipeline examples covering all
 | RPC | gRPC / Protocol Buffers |
 | Messaging | MQTT (via AsyncAPI bindings) |
 
-## Supported gateway backends
-
-| Gateway | Output |
-|---|---|
-| nginx | `location` block with `return 410` |
-| Envoy | `EnvoyFilter` / `VirtualService` YAML |
-| Kong | Route + plugin config |
-
 ## Development
 
 ```bash
@@ -74,5 +77,4 @@ go build ./...
 go test ./...
 ```
 
-Open in VS Code → "Reopen in Container" for a fully configured environment.
-
+Open in VS Code → "Reopen in Container" for a fully configured Go environment.
