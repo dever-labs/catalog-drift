@@ -190,3 +190,83 @@ func TestDetect_Table(t *testing.T) {
 		})
 	}
 }
+
+// ── MQTT and content-based detection ─────────────────────────────────────────
+
+func TestDetect_MQTTFromContent(t *testing.T) {
+dir := t.TempDir()
+path := filepath.Join(dir, "events.yaml")
+content := `asyncapi: "2.0.0"
+channels:
+  sensors/temp:
+    bindings:
+      mqtt:
+        qos: 1
+`
+if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+t.Fatal(err)
+}
+
+files, err := New(dir).Scan()
+if err != nil {
+t.Fatalf("Scan: %v", err)
+}
+if len(files) != 1 {
+t.Fatalf("expected 1 file, got %d", len(files))
+}
+if files[0].Type != TypeMQTT {
+t.Errorf("expected TypeMQTT, got %q", files[0].Type)
+}
+}
+
+func TestDetect_AsyncAPIFromContent_NonStandardName(t *testing.T) {
+dir := t.TempDir()
+path := filepath.Join(dir, "events.yaml")
+content := `asyncapi: "2.0.0"
+channels:
+  user/created:
+    subscribe:
+      message:
+        payload:
+          type: object
+`
+if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+t.Fatal(err)
+}
+
+files, err := New(dir).Scan()
+if err != nil {
+t.Fatalf("Scan: %v", err)
+}
+if len(files) != 1 {
+t.Fatalf("expected 1 file, got %d", len(files))
+}
+if files[0].Type != TypeAsyncAPI {
+t.Errorf("expected TypeAsyncAPI, got %q", files[0].Type)
+}
+}
+
+func TestDetect_OpenAPIFromContent_NonStandardName(t *testing.T) {
+dir := t.TempDir()
+path := filepath.Join(dir, "spec.yaml")
+content := `openapi: "3.0.0"
+info:
+  title: Test API
+  version: "1.0"
+paths: {}
+`
+if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+t.Fatal(err)
+}
+
+files, err := New(dir).Scan()
+if err != nil {
+t.Fatalf("Scan: %v", err)
+}
+if len(files) != 1 {
+t.Fatalf("expected 1 file, got %d", len(files))
+}
+if files[0].Type != TypeOpenAPI {
+t.Errorf("expected TypeOpenAPI, got %q", files[0].Type)
+}
+}

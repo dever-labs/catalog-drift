@@ -52,13 +52,29 @@ type Engine struct{}
 // New creates a new diff Engine.
 func New() *Engine { return &Engine{} }
 
+// DiffBreaking compares an old spec (registered baseline from Backstage) against
+// a proposed new spec (local file) and returns only breaking violations:
+// removals and incompatible changes that would affect existing consumers.
+func (e *Engine) DiffBreaking(contractType, oldDef string, newSpec scanner.SpecFile) ([]Violation, error) {
+	switch contractType {
+	case "openapi", "swagger":
+		return diffBreakingOpenAPI(oldDef, newSpec.Content)
+	case "asyncapi", "mqtt":
+		return diffBreakingAsyncAPI(oldDef, newSpec.Content)
+	case "grpc":
+		return diffBreakingGRPC(oldDef, newSpec.Content)
+	default:
+		return nil, fmt.Errorf("unsupported contract type %q for breaking diff", contractType)
+	}
+}
+
 // Diff compares the Backstage-registered contract definition against a local
 // spec file and returns any detected violations.
 func (e *Engine) Diff(contractType, contractDef string, local scanner.SpecFile) ([]Violation, error) {
 switch contractType {
-case "openapi":
+case "openapi", "swagger":
 return diffOpenAPI(contractDef, local.Content)
-case "asyncapi":
+case "asyncapi", "mqtt":
 return diffAsyncAPI(contractDef, local.Content)
 case "grpc":
 return diffGRPC(contractDef, local.Content)

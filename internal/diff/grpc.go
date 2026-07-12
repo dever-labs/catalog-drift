@@ -3,6 +3,7 @@ package diff
 import (
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 var (
@@ -19,12 +20,14 @@ func diffGRPC(contractDef string, localContent []byte) ([]Violation, error) {
 	var violations []Violation
 
 	// Methods declared in contract but missing from local.
-	for method, service := range contractMethods {
-		if _, ok := localMethods[method]; !ok {
-			path := service + "." + method
+	for key, service := range contractMethods {
+		if _, ok := localMethods[key]; !ok {
+			// key is "ServiceName.MethodName"
+			parts := strings.SplitN(key, ".", 2)
+			method := parts[len(parts)-1]
 			violations = append(violations, Violation{
 				Rule:     RuleMissingRPCMethod,
-				Path:     path,
+				Path:     key,
 				Message:  fmt.Sprintf("rpc method %q (service %q) is declared in the contract but missing from the local proto", method, service),
 				Severity: SeverityError,
 			})
@@ -32,12 +35,13 @@ func diffGRPC(contractDef string, localContent []byte) ([]Violation, error) {
 	}
 
 	// Methods in local but not declared in contract.
-	for method, service := range localMethods {
-		if _, ok := contractMethods[method]; !ok {
-			path := service + "." + method
+	for key, service := range localMethods {
+		if _, ok := contractMethods[key]; !ok {
+			parts := strings.SplitN(key, ".", 2)
+			method := parts[len(parts)-1]
 			violations = append(violations, Violation{
 				Rule:     RuleUndeclaredRPCMethod,
-				Path:     path,
+				Path:     key,
 				Message:  fmt.Sprintf("rpc method %q (service %q) exists in the local proto but is not declared in the contract", method, service),
 				Severity: SeverityWarning,
 			})
@@ -47,18 +51,17 @@ func diffGRPC(contractDef string, localContent []byte) ([]Violation, error) {
 	return violations, nil
 }
 
-// extractRPCMethods returns a map of rpc-method-name → service-name.
-// When a method appears outside a service block, the service name is "unknown".
+// extractRPCMethods returns a map of "ServiceName.MethodName" → ServiceName.
+// Using a composite key prevents false negatives when two services share a
+// method name. Methods found outside any service block use key "unknown.Method".
 func extractRPCMethods(content string) map[string]string {
 	result := make(map[string]string)
 
-	// Find service blocks: capture service name and the methods within.
 	serviceMatches := serviceRe.FindAllStringSubmatchIndex(content, -1)
 
 	for i, sm := range serviceMatches {
 		serviceName := content[sm[2]:sm[3]]
 
-		// Determine the extent of this service block (up to the next service or end).
 		blockStart := sm[0]
 		blockEnd := len(content)
 		if i+1 < len(serviceMatches) {
@@ -67,14 +70,16 @@ func extractRPCMethods(content string) map[string]string {
 		block := content[blockStart:blockEnd]
 
 		for _, mm := range rpcMethodRe.FindAllStringSubmatch(block, -1) {
-			result[mm[1]] = serviceName
+			key := serviceName + "." + mm[1]
+			result[key] = serviceName
 		}
 	}
 
 	// Methods not inside any service block.
 	if len(serviceMatches) == 0 {
 		for _, mm := range rpcMethodRe.FindAllStringSubmatch(content, -1) {
-			result[mm[1]] = "unknown"
+			key := "unknown." + mm[1]
+			result[key] = "unknown"
 		}
 	}
 

@@ -174,6 +174,56 @@ func buildContract(entity *Entity) (Contract, error) {
 	}, nil
 }
 
+// FetchConsumedContracts returns all API contracts consumed by the named
+// component (i.e. following its consumesApi relations).
+// namespace defaults to "default" when empty.
+func (c *Client) FetchConsumedContracts(ctx context.Context, component, namespace string) ([]Contract, error) {
+	if namespace == "" {
+		namespace = "default"
+	}
+	comp, err := c.fetchEntity(ctx, "component", namespace, component)
+	if err != nil {
+		return nil, fmt.Errorf("fetch component %q: %w", component, err)
+	}
+
+	var contracts []Contract
+	for _, rel := range comp.Relations {
+		if rel.Type != "consumesApi" {
+			continue
+		}
+		target := resolveTarget(rel, "api", "default")
+		apiEntity, err := c.fetchEntity(ctx, target.Kind, target.Namespace, target.Name)
+		if err != nil {
+			return nil, fmt.Errorf("fetch api %q: %w", rel.TargetRef, err)
+		}
+		contract, err := buildContract(apiEntity)
+		if err != nil {
+			return nil, fmt.Errorf("parse spec for %q: %w", rel.TargetRef, err)
+		}
+		contracts = append(contracts, contract)
+	}
+	return contracts, nil
+}
+
+// FetchDeprecatedContracts returns all API entities in the catalog whose
+// lifecycle is "deprecated", across all components and namespaces.
+func (c *Client) FetchDeprecatedContracts(ctx context.Context) ([]Contract, error) {
+	var entities []Entity
+	path := "/api/catalog/entities?filter=kind=API,spec.lifecycle=deprecated"
+	if err := c.get(ctx, path, &entities); err != nil {
+		return nil, fmt.Errorf("fetch deprecated contracts: %w", err)
+	}
+	contracts := make([]Contract, 0, len(entities))
+	for i := range entities {
+		contract, err := buildContract(&entities[i])
+		if err != nil {
+			continue // skip malformed entities
+		}
+		contracts = append(contracts, contract)
+	}
+	return contracts, nil
+}
+
 // BuildContractForTest is exported for use in tests outside this package.
 // Use the client methods in production code.
 var BuildContractForTest = buildContract
@@ -189,10 +239,15 @@ func (c *Client) fetchEntity(ctx context.Context, kind, namespace, name string) 
 	return &entity, nil
 }
 
-func (c *Client) get(ctx context.Context, path string, out any) error {
-	u, err := url.JoinPath(c.baseURL, path)
+func (c *Client) get(ctx context.Context, rawPath string, out any) error {
+	// Split at '?' before JoinPath to prevent query string encoding.
+	pathPart, query, _ := strings.Cut(rawPath, "?")
+	u, err := url.JoinPath(c.baseURL, pathPart)
 	if err != nil {
 		return fmt.Errorf("build url: %w", err)
+	}
+	if query != "" {
+		u += "?" + query
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -206,7 +261,7 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("http get %s: %w", path, err)
+		return fmt.Errorf("http get %s: %w", rawPath, err)
 	}
 	defer resp.Body.Close()
 
@@ -214,16 +269,16 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	case http.StatusOK:
 		// ok
 	case http.StatusNotFound:
-		return fmt.Errorf("%s: %w", path, ErrNotFound)
+		return fmt.Errorf("%s: %w", rawPath, ErrNotFound)
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return fmt.Errorf("%s: %w", path, ErrUnauthorized)
+		return fmt.Errorf("%s: %w", rawPath, ErrUnauthorized)
 	default:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("%s: unexpected status %d: %s", path, resp.StatusCode, body)
+		return fmt.Errorf("%s: unexpected status %d: %s", rawPath, resp.StatusCode, body)
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("decode response from %s: %w", path, err)
+		return fmt.Errorf("decode response from %s: %w", rawPath, err)
 	}
 	return nil
 }

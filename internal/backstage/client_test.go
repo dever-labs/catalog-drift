@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -438,4 +439,121 @@ func TestFetchContracts_TargetRefFallback(t *testing.T) {
 	if contracts[0].APISpec.Type != "openapi" {
 		t.Errorf("spec type = %q, want openapi", contracts[0].APISpec.Type)
 	}
+}
+
+// ── FetchConsumedContracts ────────────────────────────────────────────────────
+
+func TestFetchConsumedContracts_Happy(t *testing.T) {
+apiBody := entityJSON(t, "API", "default", "orders-api",
+APISpec{Type: "openapi", Lifecycle: "production", Definition: "openapi: 3.0.0"},
+nil)
+
+compBody := entityJSON(t, "Component", "default", "my-service",
+map[string]string{"lifecycle": "production"},
+[]Relation{{Type: "consumesApi", TargetRef: "api:default/orders-api", Target: RelationTarget{Kind: "api", Namespace: "default", Name: "orders-api"}}})
+
+mux := http.NewServeMux()
+mux.HandleFunc("/api/catalog/entities/by-name/component/default/my-service", func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+fmt.Fprint(w, compBody)
+})
+mux.HandleFunc("/api/catalog/entities/by-name/api/default/orders-api", func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+fmt.Fprint(w, apiBody)
+})
+srv := httptest.NewServer(mux)
+defer srv.Close()
+
+c := NewClient(srv.URL)
+contracts, err := c.FetchConsumedContracts(context.Background(), "my-service", "default")
+if err != nil {
+t.Fatalf("FetchConsumedContracts: %v", err)
+}
+if len(contracts) != 1 {
+t.Fatalf("expected 1 contract, got %d", len(contracts))
+}
+if contracts[0].Entity.Metadata.Name != "orders-api" {
+t.Errorf("unexpected contract name: %s", contracts[0].Entity.Metadata.Name)
+}
+}
+
+func TestFetchConsumedContracts_NoConsumesRelations(t *testing.T) {
+compBody := entityJSON(t, "Component", "default", "my-service",
+map[string]string{"lifecycle": "production"},
+[]Relation{{Type: "providesApi", TargetRef: "api:default/my-api"}}) // only provides, not consumes
+
+mux := http.NewServeMux()
+mux.HandleFunc("/api/catalog/entities/by-name/component/default/my-service", func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+fmt.Fprint(w, compBody)
+})
+srv := httptest.NewServer(mux)
+defer srv.Close()
+
+c := NewClient(srv.URL)
+contracts, err := c.FetchConsumedContracts(context.Background(), "my-service", "default")
+if err != nil {
+t.Fatalf("FetchConsumedContracts: %v", err)
+}
+if len(contracts) != 0 {
+t.Errorf("expected 0 contracts for component with no consumesApi relations, got %d", len(contracts))
+}
+}
+
+// ── FetchDeprecatedContracts ──────────────────────────────────────────────────
+
+func TestFetchDeprecatedContracts_Happy(t *testing.T) {
+apiBody := entityJSON(t, "API", "default", "legacy-api",
+APISpec{Type: "openapi", Lifecycle: "deprecated", Definition: "openapi: 3.0.0"},
+nil)
+
+mux := http.NewServeMux()
+mux.HandleFunc("/api/catalog/entities", func(w http.ResponseWriter, r *http.Request) {
+if r.URL.RawQuery == "" || (!contains(r.URL.RawQuery, "deprecated") && !contains(r.URL.RawQuery, "lifecycle")) {
+http.Error(w, "unexpected query", http.StatusBadRequest)
+return
+}
+w.Header().Set("Content-Type", "application/json")
+fmt.Fprintf(w, "[%s]", apiBody)
+})
+srv := httptest.NewServer(mux)
+defer srv.Close()
+
+c := NewClient(srv.URL)
+contracts, err := c.FetchDeprecatedContracts(context.Background())
+if err != nil {
+t.Fatalf("FetchDeprecatedContracts: %v", err)
+}
+if len(contracts) != 1 {
+t.Fatalf("expected 1 contract, got %d", len(contracts))
+}
+if contracts[0].Entity.Metadata.Name != "legacy-api" {
+t.Errorf("unexpected name: %s", contracts[0].Entity.Metadata.Name)
+}
+if !contracts[0].Deprecation.IsDeprecated {
+t.Error("expected IsDeprecated=true")
+}
+}
+
+func TestFetchDeprecatedContracts_EmptyList(t *testing.T) {
+mux := http.NewServeMux()
+mux.HandleFunc("/api/catalog/entities", func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+fmt.Fprint(w, "[]")
+})
+srv := httptest.NewServer(mux)
+defer srv.Close()
+
+c := NewClient(srv.URL)
+contracts, err := c.FetchDeprecatedContracts(context.Background())
+if err != nil {
+t.Fatalf("FetchDeprecatedContracts: %v", err)
+}
+if len(contracts) != 0 {
+t.Errorf("expected 0 contracts, got %d", len(contracts))
+}
+}
+
+func contains(s, sub string) bool {
+return strings.Contains(s, sub)
 }

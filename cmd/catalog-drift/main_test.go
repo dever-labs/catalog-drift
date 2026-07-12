@@ -345,24 +345,12 @@ func setup(r chi.Router) {
 	}
 }
 
-// ── End-to-end: runUsage ──────────────────────────────────────────────────────
+// ── End-to-end: runDeprecated ──────────────────────────────────────────────────────
 
-func TestRunUsage_MissingFlags(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-		want string
-	}{
-		{"no backstage-url", []string{"--component", "svc"}, "--backstage-url"},
-		{"no component", []string{"--backstage-url", "http://localhost"}, "--component"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := runUsage(tc.args)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("expected error containing %q, got: %v", tc.want, err)
-			}
-		})
+func TestRunDeprecated_MissingBackstageURL(t *testing.T) {
+	err := runDeprecated([]string{"--component", "svc"})
+	if err == nil || !strings.Contains(err.Error(), "--backstage-url") {
+		t.Errorf("expected --backstage-url error, got: %v", err)
 	}
 }
 
@@ -374,13 +362,13 @@ func TestRunUsage_NoDeprecatedAPIs(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	err := runUsage([]string{
+	err := runDeprecated([]string{
 		"--backstage-url", srv.URL,
 		"--component", "my-service",
 		"--source", dir,
 	})
 	if err != nil {
-		t.Fatalf("runUsage: %v", err)
+		t.Fatalf("runDeprecated: %v", err)
 	}
 }
 
@@ -562,4 +550,65 @@ func TestFetchContracts_BackstageUnreachable(t *testing.T) {
 	if err == nil {
 		t.Error("expected error when Backstage is unreachable")
 	}
+}
+
+// ── End-to-end: runBreaking ───────────────────────────────────────────────────
+
+func TestRunBreaking_MissingFlags(t *testing.T) {
+cases := []struct {
+name string
+args []string
+want string
+}{
+{"no backstage-url", []string{"--component", "svc", "--spec", "api.yaml"}, "--backstage-url"},
+{"no component", []string{"--backstage-url", "http://localhost", "--spec", "api.yaml"}, "--component"},
+{"no spec", []string{"--backstage-url", "http://localhost", "--component", "svc"}, "--spec"},
+}
+for _, tc := range cases {
+t.Run(tc.name, func(t *testing.T) {
+err := runBreaking(tc.args)
+if err == nil || !strings.Contains(err.Error(), tc.want) {
+t.Errorf("expected error containing %q, got: %v", tc.want, err)
+}
+})
+}
+}
+
+func TestRunBreaking_NoBreakingChanges(t *testing.T) {
+srv := httptest.NewServer(backstageMux(
+componentEntityJSON("orders-api"),
+apiEntityJSON("orders-api", "production", minimalOpenAPI),
+))
+defer srv.Close()
+
+specFile := filepath.Join(t.TempDir(), "orders-api.yaml")
+if err := os.WriteFile(specFile, []byte(minimalOpenAPI), 0o644); err != nil {
+t.Fatal(err)
+}
+
+err := runBreaking([]string{
+"--backstage-url", srv.URL,
+"--component", "my-service",
+"--spec", specFile,
+})
+if err != nil {
+t.Fatalf("runBreaking: %v", err)
+}
+}
+
+func TestRunBreaking_MissingSpecFile(t *testing.T) {
+srv := httptest.NewServer(backstageMux(
+componentEntityJSON("orders-api"),
+apiEntityJSON("orders-api", "production", minimalOpenAPI),
+))
+defer srv.Close()
+
+err := runBreaking([]string{
+"--backstage-url", srv.URL,
+"--component", "my-service",
+"--spec", "/no/such/file.yaml",
+})
+if err == nil {
+t.Error("expected error for missing spec file")
+}
 }

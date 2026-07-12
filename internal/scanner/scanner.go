@@ -15,6 +15,9 @@ const (
 	TypeOpenAPI  Type = "openapi"
 	TypeAsyncAPI Type = "asyncapi"
 	TypeGRPC     Type = "grpc"
+	// TypeMQTT identifies an AsyncAPI spec that uses the MQTT protocol binding.
+	// It is handled identically to TypeAsyncAPI in the diff engine.
+	TypeMQTT Type = "mqtt"
 )
 
 // SpecFile is an API specification file found on disk.
@@ -68,7 +71,8 @@ func (s *Scanner) Scan() ([]SpecFile, error) {
 }
 
 // detect returns the spec type for a file path, or false if the file is not
-// a recognised API spec.
+// a recognised API spec. Detection uses the file name prefix first, then
+// falls back to content inspection for YAML/JSON files.
 func detect(path string) (Type, bool) {
 	name := strings.ToLower(filepath.Base(path))
 	ext := filepath.Ext(name)
@@ -86,6 +90,31 @@ func detect(path string) (Type, bool) {
 		return TypeGRPC, true
 	}
 
+	// Content-based fallback for YAML/JSON files with non-standard names.
+	if ext == ".yaml" || ext == ".yml" || ext == ".json" {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return "", false
+		}
+		return detectFromContent(content)
+	}
+
+	return "", false
+}
+
+// detectFromContent inspects spec file content to determine its type.
+// MQTT is identified as AsyncAPI specs that also declare MQTT protocol bindings.
+func detectFromContent(content []byte) (Type, bool) {
+	s := string(content)
+	switch {
+	case strings.Contains(s, "asyncapi:"):
+		if strings.Contains(s, "mqtt") {
+			return TypeMQTT, true
+		}
+		return TypeAsyncAPI, true
+	case strings.Contains(s, "openapi:") || strings.Contains(s, "swagger:"):
+		return TypeOpenAPI, true
+	}
 	return "", false
 }
 

@@ -18,6 +18,7 @@ func diffOpenAPI(contractDef string, localContent []byte) ([]Violation, error) {
 
 	var violations []Violation
 	violations = append(violations, diffOpenAPIPaths(contract, local)...)
+	violations = append(violations, diffOpenAPIRequestBodies(contract, local)...)
 	return violations, nil
 }
 
@@ -51,7 +52,6 @@ func diffOpenAPIPaths(contract, local map[string]any) []Violation {
 				})
 				continue
 			}
-			// Schema-level check for this operation.
 			violations = append(violations, diffOperationSchemas(path, method, contractOp, localOp)...)
 		}
 	}
@@ -83,21 +83,62 @@ func diffOpenAPIPaths(contract, local map[string]any) []Violation {
 	return violations
 }
 
-// diffOperationSchemas checks request body and response schemas for a single operation.
+func diffOpenAPIRequestBodies(contract, local map[string]any) []Violation {
+	contractPaths := extractOpenAPIPaths(contract)
+	localPaths := extractOpenAPIPaths(local)
+
+	var violations []Violation
+	for path, contractMethods := range contractPaths {
+		localMethods, ok := localPaths[path]
+		if !ok {
+			continue
+		}
+
+		for method, contractOp := range contractMethods {
+			localOp, ok := localMethods[method]
+			if !ok {
+				continue
+			}
+
+			contractFields := extractRequestBodyFields(contractOp)
+			if len(contractFields) == 0 {
+				continue
+			}
+			localFields := extractRequestBodyFields(localOp)
+
+			for field, contractType := range contractFields {
+				basePath := fmt.Sprintf("paths.%s.%s.requestBody.content.application/json.schema.properties.%s", path, method, field)
+				localType, exists := localFields[field]
+				if !exists {
+					violations = append(violations, Violation{
+						Rule:     RuleMissingField,
+						Path:     basePath,
+						Message:  fmt.Sprintf("request body field %q is declared in the contract but missing from the local spec", field),
+						Severity: SeverityError,
+					})
+					continue
+				}
+
+				if contractType != "" && localType != "" && contractType != localType {
+					violations = append(violations, Violation{
+						Rule:     RuleTypeMismatch,
+						Path:     basePath,
+						Message:  fmt.Sprintf("request body field %q type changed from %q (contract) to %q (local)", field, contractType, localType),
+						Severity: SeverityWarning,
+					})
+				}
+			}
+		}
+	}
+
+	return violations
+}
+
+// diffOperationSchemas checks response schemas for a single operation.
 func diffOperationSchemas(path, method string, contractOp, localOp map[string]any) []Violation {
 	var violations []Violation
 	basePath := fmt.Sprintf("paths.%s.%s", path, method)
 
-	// Request body schema.
-	if cs := extractInlineSchema(contractOp, "requestBody"); cs != nil {
-		ls := extractInlineSchema(localOp, "requestBody")
-		if ls == nil {
-			ls = map[string]any{}
-		}
-		violations = append(violations, diffSchemas(cs, ls, basePath+".requestBody.schema")...)
-	}
-
-	// Response schemas (check all status codes).
 	contractResponses, _ := contractOp["responses"].(map[string]any)
 	localResponses, _ := localOp["responses"].(map[string]any)
 	for status, cr := range contractResponses {
@@ -120,6 +161,41 @@ func diffOperationSchemas(path, method string, contractOp, localOp map[string]an
 	return violations
 }
 
+func extractRequestBodyFields(op map[string]any) map[string]string {
+	if op == nil {
+		return nil
+	}
+
+	requestBody, _ := op["requestBody"].(map[string]any)
+	content := nestedMap(requestBody, "content")
+	mediaType := nestedMap(content, "application/json")
+	schema := nestedMap(mediaType, "schema")
+	return propertiesFromSchema(schema)
+}
+
+func propertiesFromSchema(schema map[string]any) map[string]string {
+	if schema == nil || schema["$ref"] != nil {
+		return nil
+	}
+
+	props, _ := schema["properties"].(map[string]any)
+	if props == nil {
+		return nil
+	}
+
+	result := make(map[string]string, len(props))
+	for name, v := range props {
+		pm, _ := v.(map[string]any)
+		if pm == nil {
+			result[name] = ""
+			continue
+		}
+		t, _ := pm["type"].(string)
+		result[name] = t
+	}
+	return result
+}
+
 // extractInlineSchema navigates to the first application/json schema it can find.
 // When key is "requestBody", it looks under requestBody.content.application/json.schema.
 // When key is "" (for responses), it looks directly under content.application/json.schema.
@@ -140,7 +216,6 @@ func extractInlineSchema(op map[string]any, key string) map[string]any {
 	if schema == nil {
 		return nil
 	}
-	// Skip $ref schemas — we don't resolve references.
 	if _, hasRef := schema["$ref"]; hasRef {
 		return nil
 	}
@@ -154,7 +229,6 @@ func diffSchemas(contract, local map[string]any, basePath string) []Violation {
 	contractProps := nestedMap(contract, "properties")
 	localProps := nestedMap(local, "properties")
 
-	// Required fields in contract must exist in local.
 	required, _ := contract["required"].([]any)
 	for _, r := range required {
 		field, ok := r.(string)
@@ -171,7 +245,6 @@ func diffSchemas(contract, local map[string]any, basePath string) []Violation {
 		}
 	}
 
-	// Type mismatches for fields present in both.
 	for field, cv := range contractProps {
 		lv, ok := localProps[field]
 		if !ok {

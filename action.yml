@@ -1,0 +1,77 @@
+name: 'catalog-drift'
+description: 'API contract drift detection against a Backstage catalog'
+author: 'dever-labs'
+
+branding:
+  icon: 'activity'
+  color: 'blue'
+
+inputs:
+  subcommand:
+    description: 'Subcommand to run: check, breaking, deprecated, consumers, enforce'
+    required: false
+    default: 'check'
+  backstage-url:
+    description: 'Backstage instance URL'
+    required: true
+  token:
+    description: 'Backstage API Bearer token'
+    required: false
+    default: ''
+  component:
+    description: 'Component name in Backstage'
+    required: false
+    default: ''
+  namespace:
+    description: 'Backstage namespace'
+    required: false
+    default: 'default'
+  source:
+    description: 'Source directory to scan (check / deprecated)'
+    required: false
+    default: '.'
+  spec:
+    description: 'Path to proposed spec file (breaking subcommand)'
+    required: false
+    default: ''
+  format:
+    description: 'Output format: text, json, junit'
+    required: false
+    default: 'text'
+  error-after:
+    description: 'Duration after deprecated-since before treating deprecation as an error (e.g. 90d)'
+    required: false
+    default: ''
+  fail-on-warn:
+    description: 'Exit 1 on warnings as well as errors'
+    required: false
+    default: 'false'
+  scan-code:
+    description: 'Also diff contract against extracted code routes (check subcommand, Go only)'
+    required: false
+    default: 'false'
+  gateway:
+    description: 'Gateway format for enforce/consumers: nginx | envoy | kong | prometheus | file'
+    required: false
+    default: 'nginx'
+  output:
+    description: 'Output file path for enforce subcommand (- for stdout)'
+    required: false
+    default: '-'
+
+runs:
+  using: 'docker'
+  image: 'docker://ghcr.io/dever-labs/catalog-drift:latest'
+  env:
+    BACKSTAGE_TOKEN: ${{ inputs.token }}
+  args:
+    - ${{ inputs.subcommand }}
+    - --backstage-url=${{ inputs.backstage-url }}
+    - --format=${{ inputs.format }}
+    - --component=${{ inputs.component }}
+    - --namespace=${{ inputs.namespace }}
+    - --source=${{ inputs.source }}
+    - --spec=${{ inputs.spec }}
+    - --gateway=${{ inputs.gateway }}
+    - --output=${{ inputs.output }}
+    - --error-after=${{ inputs.error-after }}
