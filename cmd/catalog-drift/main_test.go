@@ -1,0 +1,565 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/dever-labs/catalog-drift/internal/reporter"
+	"github.com/dever-labs/catalog-drift/internal/scanner"
+)
+
+// ── parseDuration ─────────────────────────────────────────────────────────────
+
+func TestParseDuration_Days(t *testing.T) {
+	d, err := parseDuration("90d")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != 90*24*time.Hour {
+		t.Errorf("got %v, want 90*24h", d)
+	}
+}
+
+func TestParseDuration_StandardGo(t *testing.T) {
+	d, err := parseDuration("720h")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != 720*time.Hour {
+		t.Errorf("got %v, want 720h", d)
+	}
+}
+
+func TestParseDuration_Zero(t *testing.T) {
+	_, err := parseDuration("0d")
+	if err == nil {
+		t.Error("expected error for 0d duration")
+	}
+}
+
+func TestParseDuration_Negative(t *testing.T) {
+	_, err := parseDuration("-5d")
+	if err == nil {
+		t.Error("expected error for negative day duration")
+	}
+}
+
+func TestParseDuration_Invalid(t *testing.T) {
+	_, err := parseDuration("invalid")
+	if err == nil {
+		t.Error("expected error for invalid duration string")
+	}
+}
+
+func TestParseDuration_1Day(t *testing.T) {
+	d, err := parseDuration("1d")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != 24*time.Hour {
+		t.Errorf("got %v, want 24h", d)
+	}
+}
+
+// ── matchSpec ─────────────────────────────────────────────────────────────────
+
+func makeSpec(specType scanner.Type, path string) scanner.SpecFile {
+	return scanner.SpecFile{Type: specType, Path: path}
+}
+
+func TestMatchSpec_ByName(t *testing.T) {
+	files := []scanner.SpecFile{
+		makeSpec(scanner.TypeOpenAPI, "/specs/orders-api.yaml"),
+		makeSpec(scanner.TypeOpenAPI, "/specs/users-api.yaml"),
+	}
+	match := matchSpec(files, "openapi", "orders-api")
+	if match == nil {
+		t.Fatal("expected a match, got nil")
+	}
+	if !strings.Contains(match.Path, "orders-api") {
+		t.Errorf("wrong match: %s", match.Path)
+	}
+}
+
+func TestMatchSpec_FallbackToFirstOfType(t *testing.T) {
+	files := []scanner.SpecFile{
+		makeSpec(scanner.TypeOpenAPI, "/specs/unknown.yaml"),
+	}
+	match := matchSpec(files, "openapi", "no-name-match")
+	if match == nil {
+		t.Fatal("expected fallback match, got nil")
+	}
+}
+
+func TestMatchSpec_NoMatchForDifferentType(t *testing.T) {
+	files := []scanner.SpecFile{
+		makeSpec(scanner.TypeAsyncAPI, "/specs/events.yaml"),
+	}
+	match := matchSpec(files, "openapi", "events")
+	if match != nil {
+		t.Errorf("expected nil for type mismatch, got %s", match.Path)
+	}
+}
+
+func TestMatchSpec_EmptyList(t *testing.T) {
+	match := matchSpec(nil, "openapi", "orders")
+	if match != nil {
+		t.Errorf("expected nil for empty file list, got %v", match)
+	}
+}
+
+func TestMatchSpec_ContractNameSubstringOfFilename(t *testing.T) {
+	files := []scanner.SpecFile{
+		makeSpec(scanner.TypeOpenAPI, "/specs/orders-service-openapi.yaml"),
+	}
+	match := matchSpec(files, "openapi", "orders")
+	if match == nil {
+		t.Fatal("expected match for contract name substring in filename")
+	}
+}
+
+// ── countSeverities ───────────────────────────────────────────────────────────
+
+func TestCountSeverities_Mixed(t *testing.T) {
+	findings := []reporter.Finding{
+		{Severity: "error"},
+		{Severity: "warning"},
+		{Severity: "error"},
+		{Severity: "warning"},
+		{Severity: "warning"},
+	}
+	errs, warns := countSeverities(findings)
+	if errs != 2 {
+		t.Errorf("errors: got %d, want 2", errs)
+	}
+	if warns != 3 {
+		t.Errorf("warnings: got %d, want 3", warns)
+	}
+}
+
+func TestCountSeverities_Empty(t *testing.T) {
+	errs, warns := countSeverities(nil)
+	if errs != 0 || warns != 0 {
+		t.Errorf("expected 0/0, got %d/%d", errs, warns)
+	}
+}
+
+func TestCountSeverities_AllErrors(t *testing.T) {
+	findings := []reporter.Finding{{Severity: "error"}, {Severity: "error"}}
+	errs, warns := countSeverities(findings)
+	if errs != 2 || warns != 0 {
+		t.Errorf("got %d errs, %d warns; want 2/0", errs, warns)
+	}
+}
+
+// ── End-to-end: runCheck ──────────────────────────────────────────────────────
+
+// backstageMux builds a minimal test Backstage server responding to entity
+// lookups and returns the mux for fine-grained handler overrides.
+func backstageMux(componentJSON, apiJSON string) *http.ServeMux {
+	mux := http.NewServeMux()
+	// Component lookup — Backstage client uses strings.ToLower(kind)
+	mux.HandleFunc("/api/catalog/entities/by-name/component/default/my-service", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, componentJSON)
+	})
+	// API entity lookup
+	mux.HandleFunc("/api/catalog/entities/by-name/api/default/orders-api", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, apiJSON)
+	})
+	return mux
+}
+
+func componentEntityJSON(apiName string) string {
+	return fmt.Sprintf(`{
+		"apiVersion":"backstage.io/v1alpha1",
+		"kind":"Component",
+		"metadata":{"name":"my-service","namespace":"default"},
+		"spec":{"lifecycle":"production"},
+		"relations":[{"type":"providesApi","targetRef":"api:default/%s"}]
+	}`, apiName)
+}
+
+func apiEntityJSON(name, lifecycle, definition string) string {
+	defBytes, _ := json.Marshal(definition)
+	return fmt.Sprintf(`{
+		"apiVersion":"backstage.io/v1alpha1",
+		"kind":"API",
+		"metadata":{"name":%q,"namespace":"default"},
+		"spec":{"type":"openapi","lifecycle":%q,"definition":%s}
+	}`, name, lifecycle, string(defBytes))
+}
+
+const minimalOpenAPI = `openapi: "3.0.0"
+info:
+  title: Orders API
+  version: "1.0"
+paths:
+  /orders:
+    get:
+      summary: list orders
+      responses:
+        "200":
+          description: ok
+`
+
+func TestRunCheck_CleanOutput(t *testing.T) {
+	srv := httptest.NewServer(backstageMux(
+		componentEntityJSON("orders-api"),
+		apiEntityJSON("orders-api", "production", minimalOpenAPI),
+	))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "orders-api.yaml"), []byte(minimalOpenAPI), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runCheck([]string{
+		"--backstage-url", srv.URL,
+		"--component", "my-service",
+		"--source", dir,
+		"--format", "json",
+	})
+	if err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+}
+
+func TestRunCheck_MissingBackstageURL(t *testing.T) {
+	err := runCheck([]string{"--component", "my-service"})
+	if err == nil || !strings.Contains(err.Error(), "--backstage-url") {
+		t.Errorf("expected --backstage-url error, got: %v", err)
+	}
+}
+
+func TestRunCheck_MissingComponent(t *testing.T) {
+	err := runCheck([]string{"--backstage-url", "http://localhost"})
+	if err == nil || !strings.Contains(err.Error(), "--component") {
+		t.Errorf("expected --component error, got: %v", err)
+	}
+}
+
+func TestRunCheck_InvalidFormat(t *testing.T) {
+	err := runCheck([]string{
+		"--backstage-url", "http://localhost",
+		"--component", "svc",
+		"--format", "xml",
+	})
+	if err == nil {
+		t.Error("expected error for invalid format")
+	}
+}
+
+func TestRunCheck_InvalidErrorAfter(t *testing.T) {
+	err := runCheck([]string{
+		"--backstage-url", "http://localhost",
+		"--component", "svc",
+		"--error-after", "notaduration",
+	})
+	if err == nil {
+		t.Error("expected error for invalid --error-after")
+	}
+}
+
+func TestRunCheck_DeprecatedAPIWarning(t *testing.T) {
+	srv := httptest.NewServer(backstageMux(
+		componentEntityJSON("orders-api"),
+		apiEntityJSON("orders-api", "deprecated", minimalOpenAPI),
+	))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "orders-api.yaml"), []byte(minimalOpenAPI), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Capture stdout by redirecting (we just test no error for now).
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := runCheck([]string{
+		"--backstage-url", srv.URL,
+		"--component", "my-service",
+		"--source", dir,
+		"--format", "json",
+	})
+
+	w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+
+	if err != nil {
+		t.Fatalf("runCheck: %v", err)
+	}
+
+	// JSON output should contain the deprecation finding
+	if !strings.Contains(buf.String(), "deprecat") {
+		t.Errorf("expected deprecation in output, got: %s", buf.String())
+	}
+}
+
+func TestRunCheck_ScanCode(t *testing.T) {
+	srv := httptest.NewServer(backstageMux(
+		componentEntityJSON("orders-api"),
+		apiEntityJSON("orders-api", "production", minimalOpenAPI),
+	))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	// Write matching spec
+	if err := os.WriteFile(filepath.Join(dir, "orders-api.yaml"), []byte(minimalOpenAPI), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Write matching Go route
+	routeFile := `package main
+func setup(r chi.Router) {
+	r.Get("/orders", listOrders)
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "routes.go"), []byte(routeFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runCheck([]string{
+		"--backstage-url", srv.URL,
+		"--component", "my-service",
+		"--source", dir,
+		"--scan-code",
+	})
+	if err != nil {
+		t.Fatalf("runCheck with --scan-code: %v", err)
+	}
+}
+
+// ── End-to-end: runUsage ──────────────────────────────────────────────────────
+
+func TestRunUsage_MissingFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"no backstage-url", []string{"--component", "svc"}, "--backstage-url"},
+		{"no component", []string{"--backstage-url", "http://localhost"}, "--component"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runUsage(tc.args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("expected error containing %q, got: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestRunUsage_NoDeprecatedAPIs(t *testing.T) {
+	srv := httptest.NewServer(backstageMux(
+		componentEntityJSON("orders-api"),
+		apiEntityJSON("orders-api", "production", minimalOpenAPI),
+	))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	err := runUsage([]string{
+		"--backstage-url", srv.URL,
+		"--component", "my-service",
+		"--source", dir,
+	})
+	if err != nil {
+		t.Fatalf("runUsage: %v", err)
+	}
+}
+
+// ── End-to-end: runConsumers ──────────────────────────────────────────────────
+
+func TestRunConsumers_MissingFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"no backstage-url", []string{"--component", "svc"}, "--backstage-url"},
+		{"no component", []string{"--backstage-url", "http://localhost"}, "--component"},
+		{"no logs-file", []string{"--backstage-url", "http://localhost", "--component", "svc"}, "--logs-file"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runConsumers(tc.args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("expected error containing %q, got: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestRunConsumers_InvalidLogFormat(t *testing.T) {
+	err := runConsumers([]string{
+		"--backstage-url", "http://localhost",
+		"--component", "svc",
+		"--logs-file", "/dev/null",
+		"--logs-format", "unknownformat",
+	})
+	if err == nil {
+		t.Error("expected error for invalid log format")
+	}
+}
+
+func TestRunConsumers_EmptyLogFile(t *testing.T) {
+	srv := httptest.NewServer(backstageMux(
+		componentEntityJSON("orders-api"),
+		apiEntityJSON("orders-api", "deprecated", minimalOpenAPI),
+	))
+	defer srv.Close()
+
+	f, err := os.CreateTemp("", "access-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	defer os.Remove(f.Name())
+
+	err = runConsumers([]string{
+		"--backstage-url", srv.URL,
+		"--component", "my-service",
+		"--logs-file", f.Name(),
+	})
+	if err != nil {
+		t.Fatalf("runConsumers with empty log: %v", err)
+	}
+}
+
+// ── End-to-end: runEnforce ────────────────────────────────────────────────────
+
+func TestRunEnforce_MissingFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"no backstage-url", []string{"--component", "svc"}, "--backstage-url"},
+		{"no component", []string{"--backstage-url", "http://localhost"}, "--component"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runEnforce(tc.args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("expected error containing %q, got: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestRunEnforce_InvalidGateway(t *testing.T) {
+	err := runEnforce([]string{
+		"--backstage-url", "http://localhost",
+		"--component", "svc",
+		"--gateway", "unknown-gw",
+	})
+	if err == nil {
+		t.Error("expected error for unknown gateway format")
+	}
+}
+
+func TestRunEnforce_NoSunsetRules(t *testing.T) {
+	srv := httptest.NewServer(backstageMux(
+		componentEntityJSON("orders-api"),
+		apiEntityJSON("orders-api", "production", minimalOpenAPI),
+	))
+	defer srv.Close()
+
+	err := runEnforce([]string{
+		"--backstage-url", srv.URL,
+		"--component", "my-service",
+	})
+	if err != nil {
+		t.Fatalf("runEnforce with no deprecated contracts: %v", err)
+	}
+}
+
+func TestRunEnforce_WritesFileOutput(t *testing.T) {
+	sunset := time.Now().Add(-24 * time.Hour).Format("2006-01-02")
+	apiDef := fmt.Sprintf(`{
+		"apiVersion":"backstage.io/v1alpha1",
+		"kind":"API",
+		"metadata":{
+			"name":"orders-api",
+			"namespace":"default",
+			"annotations":{
+				"catalog-drift/deprecated-since":"2024-01-01",
+				"catalog-drift/sunset-date":%q
+			}
+		},
+		"spec":{"type":"openapi","lifecycle":"deprecated","definition":%s}
+	}`, sunset, mustMarshal(minimalOpenAPI))
+
+	srv := httptest.NewServer(backstageMux(componentEntityJSON("orders-api"), apiDef))
+	defer srv.Close()
+
+	outFile := filepath.Join(t.TempDir(), "nginx-410.conf")
+
+	err := runEnforce([]string{
+		"--backstage-url", srv.URL,
+		"--component", "my-service",
+		"--gateway", "nginx",
+		"--output", outFile,
+	})
+	if err != nil {
+		t.Fatalf("runEnforce: %v", err)
+	}
+
+	content, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if !strings.Contains(string(content), "410") {
+		t.Errorf("expected 410 in nginx config, got:\n%s", string(content))
+	}
+}
+
+func mustMarshal(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// ── newBackstageClient helper ─────────────────────────────────────────────────
+
+func TestNewBackstageClient_EnvTokenFallback(t *testing.T) {
+	t.Setenv("BACKSTAGE_TOKEN", "env-token")
+	c := newBackstageClient("http://example.com", "", "env-token")
+	if c == nil {
+		t.Fatal("expected non-nil client")
+	}
+}
+
+func TestNewBackstageClient_ExplicitTokenWins(t *testing.T) {
+	c := newBackstageClient("http://example.com", "explicit", "env")
+	if c == nil {
+		t.Fatal("expected non-nil client")
+	}
+}
+
+// ── fetchContracts error path ─────────────────────────────────────────────────
+
+func TestFetchContracts_BackstageUnreachable(t *testing.T) {
+	c := newBackstageClient("http://127.0.0.1:1", "", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := fetchContracts(ctx, c, "svc", "default")
+	if err == nil {
+		t.Error("expected error when Backstage is unreachable")
+	}
+}
