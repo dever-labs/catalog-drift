@@ -8,7 +8,13 @@ branding:
 
 inputs:
   subcommand:
-    description: 'Subcommand to run: check, breaking, deprecated, consumers, enforce'
+    description: |
+      Subcommand to run:
+        check      — drift between implementation and registered spec (producer)
+        breaking   — breaking-change detection: registered spec vs proposed spec/code (producer, PR)
+        deprecated — scan consumer codebase for calls to deprecated APIs
+        consumers  — runtime consumer discovery via Prometheus or log file
+        enforce    — generate gateway config to return 410 Gone after sunset
     required: false
     default: 'check'
   backstage-url:
@@ -27,11 +33,18 @@ inputs:
     required: false
     default: 'default'
   source:
-    description: 'Source directory to scan (check / deprecated)'
+    description: |
+      Source directory to scan.
+        check/deprecated: defaults to repo root if empty.
+        breaking: enables code-route scanning when set (scans for removed endpoints in code).
+          Combine with --spec to catch both spec-level and implementation-level regressions.
     required: false
-    default: '.'
+    default: ''
   spec:
-    description: 'Path to proposed spec file (breaking subcommand)'
+    description: |
+      Path to proposed spec file (breaking subcommand — spec-based check).
+      Diffs your proposed spec against the currently registered spec in Backstage via oasdiff.
+      Omit to rely solely on code scanning (--source must then be set).
     required: false
     default: ''
   format:
@@ -75,3 +88,6 @@ runs:
     - --gateway=${{ inputs.gateway }}
     - --output=${{ inputs.output }}
     - --error-after=${{ inputs.error-after }}
+    - --fail-on-warn=${{ inputs.fail-on-warn }}
+    - --scan-code=${{ inputs.scan-code }}
+
