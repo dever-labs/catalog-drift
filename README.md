@@ -1,144 +1,73 @@
 # catalog-drift
 
-A CLI tool that owns the full API deprecation and drift lifecycle. It fetches API contracts from a [Backstage](https://backstage.io) catalog and produces four categories of findings in a single run:
+A CLI tool that owns the full API contract and deprecation lifecycle, using [Backstage](https://backstage.io) as the single source of truth.
 
-- **Contract drift** — implementation deviates from the registered contract
-- **Deprecated usage** — your code calls endpoints or fields marked deprecated in any contract in the catalog
-- **Runtime consumer discovery** — ingests gateway access logs or metrics to surface who is actually calling a deprecated API, including undeclared consumers not in the Backstage dependency graph
-- **Sunset enforcement** — generates gateway configuration (Envoy, Kong, nginx) to return `410 Gone` for endpoints that have passed their declared sunset date
+Drop it into a GitHub Actions or GitLab CI pipeline to automatically catch contract violations, breaking changes, deprecated API usage, and sunset enforcement — without maintaining any separate snapshot files.
 
-Supports **OpenAPI**, **AsyncAPI**, **gRPC (proto)**, and **MQTT**. Designed to drop into GitHub Actions or GitLab CI with a single step.
+## The core idea
 
-## How it works
+**Backstage is the authority.** Your code is compared directly against what is registered in the catalog. No spec files are checked into a special location. No separate diff snapshots. If your code diverges from what Backstage says you provide, or if you call something Backstage says is deprecated, the pipeline fails.
 
-### Contract drift (producer side)
+See **[How it works](docs/how-it-works.md)** for the full flow, and **[Pipeline integration](docs/pipeline.md)** for copy-paste GitHub Actions and GitLab CI examples.
 
-Run on the service that owns the contract. Fails CI if the implementation diverges from the registered spec.
+## Subcommands
 
-1. **Fetch** — connects to your Backstage catalog API and retrieves registered contracts for the specified component
-2. **Scan** — walks your codebase and extracts the actual API surface (routes, schemas, event definitions, proto messages)
-3. **Diff** — compares the two and surfaces violations: missing fields, changed types, undeclared endpoints, schema drift
-4. **Report** — outputs results as human-readable text, JSON, or JUnit XML
+| Command | Who runs it | What it checks |
+|---|---|---|
+| `check` | Producer, on every push | Local spec files and/or code routes vs registered Backstage contract |
+| `breaking` | Producer, on every push/PR | Code routes vs registered Backstage contract — fails if a registered endpoint is gone from code |
+| `deprecated` | Consumer, on every push/PR | Source code for calls to any API marked deprecated in the catalog |
+| `consumers` | Producer, before sunset | Who is actively calling a deprecated endpoint (Prometheus or log file) |
+| `enforce` | Producer, at sunset | Generates gateway config (nginx/Envoy/Kong) to return `410 Gone` |
 
-### Breaking-change detection (producer side)
-
-Run on a pull request that modifies an API spec. Fetches the currently registered spec from Backstage and compares it against the proposed spec, failing if any change would break existing consumers.
+## Quick start
 
 ```bash
+# Producer: did my code break the registered contract?
 catalog-drift breaking \
   --backstage-url https://backstage.example.com \
-  --component my-service \
-  --spec ./api/openapi.yaml
-```
+  --component payment-service \
+  --source ./src
 
-Works with OpenAPI, AsyncAPI, and Protocol Buffer files. Uses Backstage as the baseline — no need to maintain a separate snapshot of the previous spec version.
-
-Can also be run locally during development to check whether a spec change is safe before pushing.
-
-### Deprecated usage (consumer side)
-
-Run on any service that consumes external APIs. Warns or fails CI if the codebase calls anything marked deprecated.
-
-```bash
+# Consumer: am I calling anything deprecated?
 catalog-drift deprecated \
   --backstage-url https://backstage.example.com \
   --source ./src \
-  --format text
-```
-
-### Runtime consumer discovery
-
-Ingests gateway access logs or a Prometheus/Datadog metrics query to find services calling deprecated endpoints — including consumers not registered in the Backstage catalog. Useful for producers preparing to sunset an API.
-
-```bash
-catalog-drift consumers \
-  --backstage-url https://backstage.example.com \
-  --component my-service \
-  --gateway prometheus \
-  --prometheus-url https://prometheus.example.com \
-  --lookback 30d
-```
-
-Outputs a ranked list of active consumers with last-seen timestamp and call volume, so you can reach out to teams before enforcing a sunset.
-
-### Sunset enforcement
-
-Generates gateway configuration to return `410 Gone` for endpoints that have passed their declared `x-sunset` date. Supports Envoy, Kong, and nginx.
-
-```bash
-catalog-drift enforce \
-  --backstage-url https://backstage.example.com \
-  --component my-service \
-  --gateway envoy \
-  --output ./gateway/deprecated-routes.yaml
-```
-
-The generated config can be committed to the gateway configuration repository and applied via your standard deployment pipeline. catalog-drift does not apply config directly — it generates and validates it.
-
-## Usage (drift check)
-
-```bash
-catalog-drift \
-  --backstage-url https://backstage.example.com \
-  --component my-service \
-  --source ./src \
-  --format text
+  --error-after 90d
 ```
 
 ## GitHub Actions
 
 ```yaml
-- name: Check API drift
-  uses: dever-labs/catalog-drift@main
+- uses: dever-labs/catalog-drift@main
   with:
+    subcommand: breaking
     backstage-url: ${{ secrets.BACKSTAGE_URL }}
-    component: my-service
+    component: payment-service
     source: ./src
+    token: ${{ secrets.BACKSTAGE_TOKEN }}
 ```
 
-## GitLab CI
-
-```yaml
-api-drift:
-  image: ghcr.io/dever-labs/catalog-drift:latest
-  script:
-    - catalog-drift
-        --backstage-url $BACKSTAGE_URL
-        --component my-service
-        --source ./src
-        --format junit > drift-report.xml
-  artifacts:
-    reports:
-      junit: drift-report.xml
-```
+See [docs/pipeline.md](docs/pipeline.md) for full pipeline examples covering all subcommands.
 
 ## Supported contract types
 
-| Type | Format | Scanner |
-|---|---|---|
-| REST | OpenAPI 3.x | Route + schema extraction |
-| Event-driven | AsyncAPI 2.x / 3.x | Message + channel extraction |
-| RPC | gRPC / Protocol Buffers | Proto message + service extraction |
-| Messaging | MQTT (via AsyncAPI) | Topic + payload extraction |
-
-## Supported gateway backends (sunset enforcement)
-
-| Gateway | Output format |
+| Type | Format |
 |---|---|
-| Envoy | EnvoyFilter / VirtualService YAML |
-| Kong | Route + plugin config |
+| REST | OpenAPI 3.x |
+| Event-driven | AsyncAPI 2.x / 3.x |
+| RPC | gRPC / Protocol Buffers |
+| Messaging | MQTT (via AsyncAPI bindings) |
+
+## Supported gateway backends
+
+| Gateway | Output |
+|---|---|
 | nginx | `location` block with `return 410` |
+| Envoy | `EnvoyFilter` / `VirtualService` YAML |
+| Kong | Route + plugin config |
 
 ## Development
-
-Open in VS Code with the Dev Container for a fully configured Go environment:
-
-```
-code .
-# → Reopen in Container
-```
-
-Or locally (requires Go 1.24+):
 
 ```bash
 go mod download
@@ -146,6 +75,5 @@ go build ./...
 go test ./...
 ```
 
-## Status
+Open in VS Code → "Reopen in Container" for a fully configured environment.
 
-🚧 Early development
