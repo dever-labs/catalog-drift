@@ -27,7 +27,9 @@ func runCheck(args []string) error {
 	format       := fs.String("format", "text", "Output format: text, json, junit")
 	errorAfter   := fs.String("error-after", "", "Duration after deprecated-since before error (e.g. 90d)")
 	failOnWarn   := fs.Bool("fail-on-warn", false, "Exit 1 on warnings as well as errors")
-	scanCode     := fs.Bool("scan-code", false, "Also diff contract against extracted code routes (Go)")
+	// --scan-code: scan code routes vs Backstage contract (errors on removed endpoints)
+	// and vs local spec file (warns if spec is stale). This is the main CI gate.
+	scanCode     := fs.Bool("scan-code", false, "Scan code routes against Backstage contract and local spec")
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {

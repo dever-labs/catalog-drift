@@ -382,7 +382,6 @@ func TestRunConsumers_MissingFlags(t *testing.T) {
 	}{
 		{"no backstage-url", []string{"--component", "svc"}, "--backstage-url"},
 		{"no component", []string{"--backstage-url", "http://localhost"}, "--component"},
-		{"no logs-file", []string{"--backstage-url", "http://localhost", "--component", "svc"}, "--logs-file"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -394,39 +393,53 @@ func TestRunConsumers_MissingFlags(t *testing.T) {
 	}
 }
 
-func TestRunConsumers_InvalidLogFormat(t *testing.T) {
-	err := runConsumers([]string{
-		"--backstage-url", "http://localhost",
-		"--component", "svc",
-		"--logs-file", "/dev/null",
-		"--logs-format", "unknownformat",
-	})
-	if err == nil {
-		t.Error("expected error for invalid log format")
-	}
-}
-
-func TestRunConsumers_EmptyLogFile(t *testing.T) {
+func TestRunConsumers_NoDeprecatedAPIs(t *testing.T) {
 	srv := httptest.NewServer(backstageMux(
 		componentEntityJSON("orders-api"),
-		apiEntityJSON("orders-api", "deprecated", minimalOpenAPI),
+		apiEntityJSON("orders-api", "production", minimalOpenAPI),
 	))
 	defer srv.Close()
 
-	f, err := os.CreateTemp("", "access-*.log")
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
-	defer os.Remove(f.Name())
-
-	err = runConsumers([]string{
+	err := runConsumers([]string{
 		"--backstage-url", srv.URL,
 		"--component", "my-service",
-		"--logs-file", f.Name(),
 	})
 	if err != nil {
-		t.Fatalf("runConsumers with empty log: %v", err)
+		t.Fatalf("runConsumers: %v", err)
+	}
+}
+
+func TestRunConsumers_DeprecatedAPIWithConsumers(t *testing.T) {
+	mux := http.NewServeMux()
+	// Component entity with providesApi relation.
+	mux.HandleFunc("/api/catalog/entities/by-name/component/default/my-service", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, componentEntityJSON("orders-api"))
+	})
+	// API entity with deprecated lifecycle and an apiConsumedBy relation.
+	mux.HandleFunc("/api/catalog/entities/by-name/api/default/orders-api", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{
+			"apiVersion":"backstage.io/v1alpha1","kind":"API",
+			"metadata":{"name":"orders-api","namespace":"default","annotations":{"catalog-drift/deprecated-since":"2024-01-01"}},
+			"spec":{"type":"openapi","lifecycle":"deprecated","definition":%q},
+			"relations":[{"type":"apiConsumedBy","targetRef":"component:default/checkout-service","target":{"kind":"component","namespace":"default","name":"checkout-service"}}]
+		}`, minimalOpenAPI)
+	})
+	mux.HandleFunc("/api/catalog/entities/by-name/component/default/checkout-service", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"apiVersion":"backstage.io/v1alpha1","kind":"Component","metadata":{"name":"checkout-service","namespace":"default"},"spec":{},"relations":[]}`)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	err := runConsumers([]string{
+		"--backstage-url", srv.URL,
+		"--component", "my-service",
+	})
+	if err != nil {
+		t.Fatalf("runConsumers: %v", err)
 	}
 }
 
@@ -552,28 +565,9 @@ func TestFetchContracts_BackstageUnreachable(t *testing.T) {
 	}
 }
 
-// ── End-to-end: runBreaking ───────────────────────────────────────────────────
+// ── End-to-end: check --scan-code (formerly runBreaking) ─────────────────────
 
-func TestRunBreaking_MissingFlags(t *testing.T) {
-cases := []struct {
-name string
-args []string
-want string
-}{
-{"no backstage-url", []string{"--component", "svc"}, "--backstage-url"},
-{"no component", []string{"--backstage-url", "http://localhost"}, "--component"},
-}
-for _, tc := range cases {
-t.Run(tc.name, func(t *testing.T) {
-err := runBreaking(tc.args)
-if err == nil || !strings.Contains(err.Error(), tc.want) {
-t.Errorf("expected error containing %q, got: %v", tc.want, err)
-}
-})
-}
-}
-
-func TestRunBreaking_NoBreakingChanges(t *testing.T) {
+func TestRunCheck_ScanCode_NoViolations(t *testing.T) {
 srv := httptest.NewServer(backstageMux(
 componentEntityJSON("orders-api"),
 apiEntityJSON("orders-api", "production", minimalOpenAPI),
@@ -581,7 +575,6 @@ apiEntityJSON("orders-api", "production", minimalOpenAPI),
 defer srv.Close()
 
 srcDir := t.TempDir()
-// Write a Go file that implements GET /orders — matches minimalOpenAPI.
 goFile := filepath.Join(srcDir, "main.go")
 if err := os.WriteFile(goFile, []byte(`package main
 import "github.com/gin-gonic/gin"
@@ -593,27 +586,29 @@ func main() {
 	t.Fatal(err)
 }
 
-err := runBreaking([]string{
+err := runCheck([]string{
 "--backstage-url", srv.URL,
 "--component", "my-service",
 "--source", srcDir,
+"--scan-code",
 })
 if err != nil {
-t.Fatalf("runBreaking: %v", err)
+t.Fatalf("runCheck --scan-code: %v", err)
 }
 }
 
-func TestRunBreaking_MissingSourceDir(t *testing.T) {
+func TestRunCheck_ScanCode_MissingSourceDir(t *testing.T) {
 srv := httptest.NewServer(backstageMux(
 componentEntityJSON("orders-api"),
 apiEntityJSON("orders-api", "production", minimalOpenAPI),
 ))
 defer srv.Close()
 
-err := runBreaking([]string{
+err := runCheck([]string{
 "--backstage-url", srv.URL,
 "--component", "my-service",
 "--source", "/no/such/dir",
+"--scan-code",
 })
 if err == nil {
 t.Error("expected error for missing source directory")

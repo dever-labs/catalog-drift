@@ -31,8 +31,6 @@ var err error
 switch args[0] {
 case "check":
 err = runCheck(args[1:])
-case "breaking":
-err = runBreaking(args[1:])
 case "deprecated":
 err = runDeprecated(args[1:])
 case "usage":
@@ -59,8 +57,7 @@ func printUsage() {
 fmt.Fprintln(os.Stderr, `catalog-drift — API contract drift detection
 
 Usage:
-  catalog-drift check       [flags]   Diff Backstage contracts against local spec files or code
-  catalog-drift breaking    [flags]   Detect breaking changes between a proposed spec and the registered baseline
+  catalog-drift check       [flags]   Diff Backstage contracts against local spec files and/or code
   catalog-drift deprecated  [flags]   Scan code for calls to any deprecated API in the catalog
   catalog-drift consumers   [flags]   Discover consumers of deprecated APIs from gateway logs
   catalog-drift enforce     [flags]   Generate gateway config to return 410 for sunsetted APIs

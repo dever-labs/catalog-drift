@@ -10,11 +10,10 @@ inputs:
   subcommand:
     description: |
       Subcommand to run:
-        check      — drift between implementation and registered spec (producer)
-        breaking   — breaking-change detection: registered spec vs proposed spec/code (producer, PR)
+        check      — drift between local spec/code and registered Backstage contract (producer)
         deprecated — scan consumer codebase for calls to deprecated APIs
-        consumers  — runtime consumer discovery via Prometheus or log file
-        enforce    — generate gateway config to return 410 Gone after sunset
+        consumers  — find which catalog components consume a deprecated API
+        enforce    — generate gateway config to return 410 Gone after sunset date
     required: false
     default: 'check'
   backstage-url:
@@ -35,15 +34,12 @@ inputs:
   source:
     description: |
       Source directory to scan.
-        check/deprecated: defaults to repo root if empty.
-        breaking: enables code-route scanning when set (scans for removed endpoints in code).
-          Combine with --spec to catch both spec-level and implementation-level regressions.
+        check: scans for local spec files; with --scan-code also checks code routes vs Backstage
+        deprecated: scans source code for calls to deprecated endpoints
     required: false
     default: ''
   spec:
-    description: |
-      Path to proposed spec file (check subcommand only — for local spec scanning).
-      Not used by breaking; that subcommand fetches the contract directly from Backstage.
+    description: 'Path to a local spec file (check subcommand, optional)'
     required: false
     default: ''
   format:

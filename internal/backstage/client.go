@@ -224,6 +224,37 @@ func (c *Client) FetchDeprecatedContracts(ctx context.Context) ([]Contract, erro
 	return contracts, nil
 }
 
+// FetchAPIConsumers returns all Component entities in the catalog that declare
+// a consumesApi relation pointing at the given API name.
+// Backstage exposes this via the entity's relations[] array — every component
+// that lists an API under consumesApis will have a "consumesApi" relation on
+// the API entity pointing back at it.
+func (c *Client) FetchAPIConsumers(ctx context.Context, apiName, namespace string) ([]Entity, error) {
+	if namespace == "" {
+		namespace = "default"
+	}
+	// Fetch the API entity itself and walk its relations for "apiConsumedBy".
+	entity, err := c.fetchEntity(ctx, "api", namespace, apiName)
+	if err != nil {
+		return nil, fmt.Errorf("fetch api %q: %w", apiName, err)
+	}
+
+	var consumers []Entity
+	for _, rel := range entity.Relations {
+		if rel.Type != "apiConsumedBy" {
+			continue
+		}
+		target := resolveTarget(rel, "component", namespace)
+		comp, err := c.fetchEntity(ctx, target.Kind, target.Namespace, target.Name)
+		if err != nil {
+			// Non-fatal: catalog may have stale refs.
+			continue
+		}
+		consumers = append(consumers, *comp)
+	}
+	return consumers, nil
+}
+
 // BuildContractForTest is exported for use in tests outside this package.
 // Use the client methods in production code.
 var BuildContractForTest = buildContract
