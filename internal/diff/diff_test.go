@@ -436,8 +436,165 @@ service AdminService {
 }
 `
 	vs := diffSpec(t, "grpc", protoBase, []byte(local))
-	if !hasViolation(vs, RuleUndeclaredRPCMethod, "DeleteOrder") {
-		t.Errorf("expected undeclared-rpc-method for DeleteOrder, violations: %v", vs)
+	// With a proper parser the undeclared service itself is reported at the service level.
+	if !hasViolation(vs, RuleUndeclaredRPCMethod, "AdminService") {
+		t.Errorf("expected undeclared-rpc-method for AdminService, violations: %v", vs)
+	}
+}
+
+func TestDiffGRPC_FieldRemoved(t *testing.T) {
+	contract := `
+syntax = "proto3";
+package orders;
+
+service OrderService {
+  rpc CreateOrder (CreateOrderRequest) returns (Order);
+}
+
+message CreateOrderRequest {
+  string user_id  = 1;
+  int64  amount   = 2;
+  string currency = 3;
+}
+
+message Order {
+  string order_id = 1;
+}
+`
+	// currency field removed
+	local := `
+syntax = "proto3";
+package orders;
+
+service OrderService {
+  rpc CreateOrder (CreateOrderRequest) returns (Order);
+}
+
+message CreateOrderRequest {
+  string user_id = 1;
+  int64  amount  = 2;
+}
+
+message Order {
+  string order_id = 1;
+}
+`
+	vs := diffSpec(t, "grpc", contract, []byte(local))
+	if !hasViolation(vs, RuleMissingRPCMethod, "currency") {
+		t.Errorf("expected field-removed violation for 'currency', got: %v", vs)
+	}
+}
+
+func TestDiffGRPC_FieldTypeChanged(t *testing.T) {
+	contract := `
+syntax = "proto3";
+package orders;
+
+service OrderService {
+  rpc GetOrder (GetOrderRequest) returns (Order);
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+message Order {
+  string order_id = 1;
+  int64  amount   = 2;
+}
+`
+	// amount changed from int64 to string
+	local := `
+syntax = "proto3";
+package orders;
+
+service OrderService {
+  rpc GetOrder (GetOrderRequest) returns (Order);
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+message Order {
+  string order_id = 1;
+  string amount   = 2;
+}
+`
+	vs := diffSpec(t, "grpc", contract, []byte(local))
+	if !hasViolation(vs, RuleMissingRPCMethod, "amount") {
+		t.Errorf("expected type-changed violation for 'amount', got: %v", vs)
+	}
+}
+
+func TestDiffGRPC_FieldNumberChanged(t *testing.T) {
+	contract := `
+syntax = "proto3";
+package orders;
+
+service OrderService {
+  rpc GetOrder (GetOrderRequest) returns (Order);
+}
+
+message GetOrderRequest {
+  string order_id  = 1;
+  string tenant_id = 2;
+}
+
+message Order {
+  string order_id = 1;
+}
+`
+	// tenant_id moved to field number 3 (field 2 gone) — breaks wire format
+	local := `
+syntax = "proto3";
+package orders;
+
+service OrderService {
+  rpc GetOrder (GetOrderRequest) returns (Order);
+}
+
+message GetOrderRequest {
+  string order_id  = 1;
+  string tenant_id = 3;
+}
+
+message Order {
+  string order_id = 1;
+}
+`
+	vs := diffSpec(t, "grpc", contract, []byte(local))
+	if !hasViolation(vs, RuleMissingRPCMethod, "tenant_id") {
+		t.Errorf("expected field-renumbered violation for 'tenant_id', got: %v", vs)
+	}
+}
+
+func TestDiffGRPC_MethodRequestTypeChanged(t *testing.T) {
+	contract := `
+syntax = "proto3";
+package orders;
+
+service OrderService {
+  rpc CreateOrder (CreateOrderRequest) returns (Order);
+}
+
+message CreateOrderRequest { string user_id = 1; }
+message Order               { string order_id = 1; }
+`
+	local := `
+syntax = "proto3";
+package orders;
+
+service OrderService {
+  rpc CreateOrder (NewCreateOrderRequest) returns (Order);
+}
+
+message NewCreateOrderRequest { string user_id = 1; }
+message Order                 { string order_id = 1; }
+`
+	vs := diffSpec(t, "grpc", contract, []byte(local))
+	if !hasViolation(vs, RuleMissingRPCMethod, "CreateOrder") {
+		t.Errorf("expected request-type-changed violation for CreateOrder, got: %v", vs)
 	}
 }
 
