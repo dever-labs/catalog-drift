@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dever-labs/catalog-drift/internal/backstage"
 	"github.com/dever-labs/catalog-drift/internal/reporter"
 	"github.com/dever-labs/catalog-drift/internal/scanner"
 )
@@ -616,5 +617,52 @@ err := runCheck([]string{
 })
 if err == nil {
 t.Error("expected error for missing source directory")
+}
+}
+
+// ── deprecatedUsageSeverity ───────────────────────────────────────────────────
+
+func TestDeprecatedUsageSeverity_NoDates(t *testing.T) {
+dep := backstage.DeprecationInfo{IsDeprecated: true}
+now := time.Now()
+if got := deprecatedUsageSeverity(dep, 0, now); got != "warning" {
+t.Errorf("want warning, got %s", got)
+}
+if got := deprecatedUsageSeverity(dep, 90*24*time.Hour, now); got != "warning" {
+t.Errorf("want warning (no DeprecatedSince), got %s", got)
+}
+}
+
+func TestDeprecatedUsageSeverity_GracePeriodNotElapsed(t *testing.T) {
+since := time.Now().Add(-30 * 24 * time.Hour) // deprecated 30 days ago
+dep := backstage.DeprecationInfo{IsDeprecated: true, DeprecatedSince: &since}
+// grace = 90d, only 30d elapsed → warning
+if got := deprecatedUsageSeverity(dep, 90*24*time.Hour, time.Now()); got != "warning" {
+t.Errorf("want warning, got %s", got)
+}
+}
+
+func TestDeprecatedUsageSeverity_GracePeriodElapsed(t *testing.T) {
+since := time.Now().Add(-100 * 24 * time.Hour) // deprecated 100 days ago
+dep := backstage.DeprecationInfo{IsDeprecated: true, DeprecatedSince: &since}
+// grace = 90d, 100d elapsed → error
+if got := deprecatedUsageSeverity(dep, 90*24*time.Hour, time.Now()); got != "error" {
+t.Errorf("want error, got %s", got)
+}
+}
+
+func TestDeprecatedUsageSeverity_PastSunsetDate(t *testing.T) {
+sunset := time.Now().Add(-1 * time.Hour) // sunset was 1 hour ago
+dep := backstage.DeprecationInfo{IsDeprecated: true, SunsetDate: &sunset}
+if got := deprecatedUsageSeverity(dep, 0, time.Now()); got != "error" {
+t.Errorf("want error (past sunset), got %s", got)
+}
+}
+
+func TestDeprecatedUsageSeverity_FutureSunsetDate(t *testing.T) {
+sunset := time.Now().Add(30 * 24 * time.Hour) // sunset in 30 days
+dep := backstage.DeprecationInfo{IsDeprecated: true, SunsetDate: &sunset}
+if got := deprecatedUsageSeverity(dep, 0, time.Now()); got != "warning" {
+t.Errorf("want warning (future sunset), got %s", got)
 }
 }

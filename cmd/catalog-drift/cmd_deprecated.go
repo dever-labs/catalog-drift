@@ -8,6 +8,7 @@ import (
 "path/filepath"
 "time"
 
+"github.com/dever-labs/catalog-drift/internal/backstage"
 "github.com/dever-labs/catalog-drift/internal/diff"
 "github.com/dever-labs/catalog-drift/internal/reporter"
 "github.com/dever-labs/catalog-drift/internal/usage"
@@ -98,7 +99,11 @@ s.Name,
 
 // ── Check 1: Deprecated usage ─────────────────────────────────────────────
 // Code calls an endpoint the catalog has marked deprecated.
-var deprecatedPaths map[string]string // path → contract name
+// Severity is warning by default, escalating to error when:
+//   - the API's sunset date has passed, OR
+//   - --error-after is set and time since DeprecatedSince exceeds the grace period.
+var deprecatedPaths map[string]string                    // path → contract name
+depInfoByAPI := make(map[string]backstage.DeprecationInfo) // contract name → deprecation metadata
 
 if *component != "" {
 // Scoped: only APIs this component declared it consumes.
@@ -115,6 +120,7 @@ endpoints, err := diff.ExtractEndpoints(s.Contract.APISpec.Type, s.Contract.APIS
 if err != nil {
 continue
 }
+depInfoByAPI[s.Name] = s.Contract.Deprecation
 for _, ep := range endpoints {
 deprecatedPaths[ep.Path] = s.Name
 }
@@ -131,6 +137,7 @@ endpoints, err := diff.ExtractEndpoints(c.APISpec.Type, c.APISpec.Definition)
 if err != nil {
 continue
 }
+depInfoByAPI[c.Entity.Metadata.Name] = c.Deprecation
 for _, ep := range endpoints {
 deprecatedPaths[ep.Path] = c.Entity.Metadata.Name
 }
@@ -142,16 +149,22 @@ usages, err := usage.New(absSource).Scan(deprecatedPaths)
 if err != nil {
 return fmt.Errorf("scan for deprecated usage: %w", err)
 }
+now := time.Now()
 for _, u := range usages {
-sev := "warning"
-if gracePeriod == 0 {
-sev = "error"
+dep := depInfoByAPI[u.ContractName]
+sev := deprecatedUsageSeverity(dep, gracePeriod, now)
+msg := fmt.Sprintf("call to deprecated endpoint %q at %s:%d", u.DeprecatedPath, u.File, u.Line)
+if dep.SunsetDate != nil {
+msg += fmt.Sprintf(" (sunset: %s)", dep.SunsetDate.Format("2006-01-02"))
+}
+if dep.Message != "" {
+msg += " — " + dep.Message
 }
 findings = append(findings, reporter.Finding{
 Kind:     "deprecated-usage",
 APIName:  u.ContractName,
 Severity: sev,
-Message:  fmt.Sprintf("call to deprecated endpoint %q at %s:%d", u.DeprecatedPath, u.File, u.Line),
+Message:  msg,
 Detail:   u.Context,
 })
 }
@@ -232,4 +245,20 @@ if errors > 0 || (*failOnWarn && warnings > 0) {
 os.Exit(exitViolations)
 }
 return nil
+}
+
+// deprecatedUsageSeverity returns the severity for a deprecated-usage finding.
+//
+// Rules (in priority order):
+//  1. Past SunsetDate → error (the API is effectively end-of-life).
+//  2. gracePeriod > 0 and DeprecatedSince is known and elapsed time >= gracePeriod → error.
+//  3. Everything else → warning (not yet past the threshold, or no threshold configured).
+func deprecatedUsageSeverity(dep backstage.DeprecationInfo, gracePeriod time.Duration, now time.Time) string {
+if dep.SunsetDate != nil && now.After(*dep.SunsetDate) {
+return "error"
+}
+if gracePeriod > 0 && dep.DeprecatedSince != nil && now.Sub(*dep.DeprecatedSince) >= gracePeriod {
+return "error"
+}
+return "warning"
 }
