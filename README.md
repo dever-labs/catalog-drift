@@ -20,6 +20,21 @@ Run on the service that owns the contract. Fails CI if the implementation diverg
 3. **Diff** — compares the two and surfaces violations: missing fields, changed types, undeclared endpoints, schema drift
 4. **Report** — outputs results as human-readable text, JSON, or JUnit XML
 
+### Breaking-change detection (producer side)
+
+Run on a pull request that modifies an API spec. Fetches the currently registered spec from Backstage and compares it against the proposed spec, failing if any change would break existing consumers.
+
+```bash
+catalog-drift breaking \
+  --backstage-url https://backstage.example.com \
+  --component my-service \
+  --spec ./api/openapi.yaml
+```
+
+Works with OpenAPI, AsyncAPI, and Protocol Buffer files. Uses Backstage as the baseline — no need to maintain a separate snapshot of the previous spec version.
+
+Can also be run locally during development to check whether a spec change is safe before pushing.
+
 ### Deprecated usage (consumer side)
 
 Run on any service that consumes external APIs. Warns or fails CI if the codebase calls anything marked deprecated.
