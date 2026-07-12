@@ -2,7 +2,6 @@
 
 A CLI tool that owns the full API contract and deprecation lifecycle, using [Backstage](https://backstage.io) as the single source of truth.
 
-Drop it into a GitHub Actions or GitLab CI pipeline to automatically catch contract violations, breaking changes, deprecated API usage, and sunset enforcement — without maintaining any separate snapshot files.
 
 ## The core idea
 
@@ -18,7 +17,7 @@ See **[How it works](docs/how-it-works.md)** for the full flow, and **[Pipeline 
 | `breaking` | Producer, on every push/PR | Code routes vs registered Backstage contract — fails if a registered endpoint is gone from code |
 | `deprecated` | Consumer, on every push/PR | Source code for calls to any API marked deprecated in the catalog |
 | `consumers` | Producer, before sunset | Who is actively calling a deprecated endpoint (Prometheus or log file) |
-| `enforce` | Producer, at sunset | Generates gateway config (nginx/Envoy/Kong) to return `410 Gone` |
+
 
 ## Quick start
 

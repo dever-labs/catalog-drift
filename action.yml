@@ -1,5 +1,5 @@
 name: 'catalog-drift'
-description: 'API contract drift detection against a Backstage catalog'
+description: 'API contract drift and deprecation detection against a Backstage catalog'
 author: 'dever-labs'
 
 branding:
@@ -10,10 +10,9 @@ inputs:
   subcommand:
     description: |
       Subcommand to run:
-        check      — drift between local spec/code and registered Backstage contract (producer)
-        deprecated — scan consumer codebase for calls to deprecated APIs
-        consumers  — find which catalog components consume a deprecated API
-        enforce    — generate gateway config to return 410 Gone after sunset date
+        check      — diff local spec/code against the registered Backstage contract
+        deprecated — scan source code for calls to deprecated APIs
+        consumers  — list catalog components that consume a deprecated API
     required: false
     default: 'check'
   backstage-url:
@@ -34,12 +33,8 @@ inputs:
   source:
     description: |
       Source directory to scan.
-        check: scans for local spec files; with --scan-code also checks code routes vs Backstage
+        check: scans for local spec files; with scan-code=true also checks code routes vs Backstage
         deprecated: scans source code for calls to deprecated endpoints
-    required: false
-    default: ''
-  spec:
-    description: 'Path to a local spec file (check subcommand, optional)'
     required: false
     default: ''
   format:
@@ -55,17 +50,9 @@ inputs:
     required: false
     default: 'false'
   scan-code:
-    description: 'Also diff contract against extracted code routes (check subcommand, Go only)'
+    description: 'Scan code routes against Backstage contract and local spec (check subcommand)'
     required: false
     default: 'false'
-  gateway:
-    description: 'Gateway format for enforce/consumers: nginx | envoy | kong | prometheus | file'
-    required: false
-    default: 'nginx'
-  output:
-    description: 'Output file path for enforce subcommand (- for stdout)'
-    required: false
-    default: '-'
 
 runs:
   using: 'docker'
@@ -79,10 +66,6 @@ runs:
     - --component=${{ inputs.component }}
     - --namespace=${{ inputs.namespace }}
     - --source=${{ inputs.source }}
-    - --spec=${{ inputs.spec }}
-    - --gateway=${{ inputs.gateway }}
-    - --output=${{ inputs.output }}
     - --error-after=${{ inputs.error-after }}
     - --fail-on-warn=${{ inputs.fail-on-warn }}
     - --scan-code=${{ inputs.scan-code }}
-

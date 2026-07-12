@@ -39,7 +39,8 @@ err = runDeprecated(args[1:])
 case "consumers":
 err = runConsumers(args[1:])
 case "enforce":
-err = runEnforce(args[1:])
+fmt.Fprintln(os.Stderr, "enforce has been removed — 410 gateway enforcement is out of scope for this tool")
+os.Exit(exitToolError)
 case "help", "--help", "-h":
 printUsage()
 default:
@@ -54,13 +55,12 @@ os.Exit(exitToolError)
 }
 
 func printUsage() {
-fmt.Fprintln(os.Stderr, `catalog-drift — API contract drift detection
+fmt.Fprintln(os.Stderr, `catalog-drift — API contract drift and deprecation detection
 
 Usage:
-  catalog-drift check       [flags]   Diff Backstage contracts against local spec files and/or code
-  catalog-drift deprecated  [flags]   Scan code for calls to any deprecated API in the catalog
-  catalog-drift consumers   [flags]   Discover consumers of deprecated APIs from gateway logs
-  catalog-drift enforce     [flags]   Generate gateway config to return 410 for sunsetted APIs
+  catalog-drift check       [flags]   Diff local spec/code against the registered Backstage contract
+  catalog-drift deprecated  [flags]   Scan source code for calls to deprecated APIs
+  catalog-drift consumers   [flags]   List catalog components that consume a deprecated API
 
 Run 'catalog-drift <command> --help' for per-command flags.`)
 }

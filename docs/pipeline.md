@@ -22,7 +22,7 @@ jobs:
           backstage-url: ${{ secrets.BACKSTAGE_URL }}
           component: payment-service
           source: ./src
-          scan-code: 'true'    # check code routes vs Backstage; warn if local spec is stale
+          scan-code: 'true'
           token: ${{ secrets.BACKSTAGE_TOKEN }}
 ```
 
@@ -45,7 +45,7 @@ jobs:
           backstage-url: ${{ secrets.BACKSTAGE_URL }}
           component: order-service   # optional: scope to declared consumesApis
           source: ./src
-          error-after: 90d           # warning for 90 days, then error
+          error-after: 90d
           token: ${{ secrets.BACKSTAGE_TOKEN }}
 ```
 
@@ -70,39 +70,6 @@ jobs:
           backstage-url: ${{ secrets.BACKSTAGE_URL }}
           component: payment-service
           token: ${{ secrets.BACKSTAGE_TOKEN }}
-```
-
-### Sunset enforcement
-
-```yaml
-# .github/workflows/enforce-sunset.yml
-name: Enforce sunset
-
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 6 * * *'
-
-jobs:
-  enforce:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dever-labs/catalog-drift@main
-        with:
-          subcommand: enforce
-          backstage-url: ${{ secrets.BACKSTAGE_URL }}
-          component: payment-service
-          gateway: nginx
-          output: ./gateway/sunset-routes.conf
-          token: ${{ secrets.BACKSTAGE_TOKEN }}
-      - name: Commit gateway config
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ./gateway/sunset-routes.conf
-          git diff --cached --quiet || git commit -m "chore: update sunset gateway rules"
-          git push
 ```
 
 ---
@@ -178,10 +145,3 @@ deprecated-usage:
 |---|---|
 | `--source` | Directory to scan for deprecated API calls |
 | `--error-after` | Grace period before deprecated usage becomes an error |
-
-### `enforce`
-
-| Flag | Default | Description |
-|---|---|---|
-| `--gateway` | `nginx` | `nginx`, `envoy`, or `kong` |
-| `--output` | `-` | Output file path (`-` for stdout) |

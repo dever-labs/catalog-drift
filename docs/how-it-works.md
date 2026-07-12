@@ -64,7 +64,7 @@ catalog-drift deprecated \
 
 **Who runs it:** API producers, before setting a sunset date.
 
-Fetches the deprecated APIs provided by a component, then queries Backstage for all components that have declared they consume each one. No log scraping, no Prometheus — Backstage already knows this from `consumesApis` relations.
+Fetches the deprecated APIs provided by a component, then queries Backstage for all components that have declared they consume each one. No log scraping — Backstage already knows this from `consumesApis` relations.
 
 ```bash
 catalog-drift consumers \
@@ -76,30 +76,12 @@ Output: a list of components that declared they consume a now-deprecated API —
 
 ---
 
-### `enforce` — Return 410 Gone for past-sunset endpoints
-
-**Who runs it:** API producers, at or after the declared sunset date.
-
-Generates gateway configuration for any endpoint whose `catalog-drift/sunset-date` annotation has passed.
-
-```bash
-catalog-drift enforce \
-  --backstage-url https://backstage.example.com \
-  --component payment-service \
-  --gateway nginx \
-  --output ./gateway/sunset-routes.conf
-```
-
-The tool generates config only — commit the output and deploy via your normal pipeline.
-
----
-
 ## Backstage annotations
 
 | Annotation | Description | Example |
 |---|---|---|
 | `catalog-drift/deprecated-since` | Date the API was marked deprecated | `2024-01-15` |
-| `catalog-drift/sunset-date` | Date after which 410 should be enforced | `2024-07-15` |
+| `catalog-drift/sunset-date` | Date used for informational reporting | `2024-07-15` |
 | `catalog-drift/deprecation-message` | Human-readable reason | `Use /v2/payments instead` |
 | `catalog-drift/successor` | Replacement API name | `payment-api-v2` |
 
