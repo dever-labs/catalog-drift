@@ -10,6 +10,15 @@ Designed to drop into a GitHub Actions or GitLab CI pipeline to catch contract v
 
 See **[How it works](docs/how-it-works.md)** for the full flow and **[Pipeline integration](docs/pipeline.md)** for copy-paste GitHub Actions and GitLab CI examples.
 
+## Two-part system
+
+| Part | Who | What |
+|---|---|---|
+| `catalog-drift` CLI | Pipeline (this repo) | Catches contract violations and deprecated API usage in CI/CD |
+| [Backstage plugin](plugins/catalog-drift/) | Admins / platform team | Configures API governance policies centrally in the portal |
+
+Governance policies (e.g. "deprecated usage becomes a pipeline error after 90 days") are configured once in Backstage by admins, and the CLI picks them up automatically — no per-repo flag configuration needed.
+
 ## Commands
 
 | Command | Who runs it | What it does |
@@ -29,10 +38,11 @@ catalog-drift check \
   --scan-code
 
 # Consumer: am I calling anything deprecated?
+# --error-after is optional if a GovernancePolicy is configured in Backstage
 catalog-drift deprecated \
   --backstage-url https://backstage.example.com \
-  --source ./src \
-  --error-after 90d
+  --component payment-service \
+  --source ./src
 ```
 
 ## GitHub Actions
@@ -49,16 +59,39 @@ catalog-drift deprecated \
     token: ${{ secrets.BACKSTAGE_TOKEN }}
 
 # Consumer — fail on deprecated API usage
+# Grace period comes from the GovernancePolicy in Backstage (if configured),
+# or can be overridden with error-after: 90d
 - uses: dever-labs/catalog-drift@main
   with:
     subcommand: deprecated
     backstage-url: ${{ secrets.BACKSTAGE_URL }}
+    component: payment-service
     source: ./src
-    error-after: 90d
     token: ${{ secrets.BACKSTAGE_TOKEN }}
 ```
 
 See [docs/pipeline.md](docs/pipeline.md) for full examples covering all commands.
+
+## Governance policies
+
+Deprecation grace periods and failure thresholds are managed centrally through the [Backstage plugin](plugins/catalog-drift/). Admins create `GovernancePolicy` entities in the catalog; the CLI resolves the active policy automatically at runtime.
+
+```yaml
+# Example GovernancePolicy entity in Backstage
+apiVersion: catalog-drift.io/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: default
+  namespace: default
+spec:
+  deprecation:
+    errorAfter: "90d"       # warning → error after 90 days
+    warnBeforeSunset: "30d" # warn 30 days before sunset
+  contract:
+    failOnWarn: false
+```
+
+See [plugins/catalog-drift/README.md](plugins/catalog-drift/README.md) for plugin installation and full policy reference.
 
 ## Supported contract types
 
@@ -78,3 +111,4 @@ go test ./...
 ```
 
 Open in VS Code → "Reopen in Container" for a fully configured Go environment.
+

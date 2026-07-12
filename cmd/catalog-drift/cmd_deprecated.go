@@ -27,52 +27,52 @@ import (
 //
 // Checks 2 and 3 require --component. Check 1 runs with or without it.
 func runDeprecated(args []string) error {
-fs := flag.NewFlagSet("deprecated", flag.ContinueOnError)
-fs.SetOutput(os.Stderr)
+	fs := flag.NewFlagSet("deprecated", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
 
-backstageURL := fs.String("backstage-url", "", "Backstage instance URL (required)")
-component    := fs.String("component", "", "Component name — scopes checks to declared consumesApis")
-namespace    := fs.String("namespace", "default", "Backstage namespace")
-token        := fs.String("token", "", "Backstage Bearer token (env: BACKSTAGE_TOKEN)")
-source       := fs.String("source", ".", "Source directory to scan")
-format       := fs.String("format", "text", "Output format: text, json, junit")
-errorAfter   := fs.String("error-after", "", "Grace period before deprecated usage becomes an error (e.g. 90d)")
-failOnWarn   := fs.Bool("fail-on-warn", false, "Exit 1 on warnings as well as errors")
+	backstageURL := fs.String("backstage-url", "", "Backstage instance URL (required)")
+	component    := fs.String("component", "", "Component name — scopes checks to declared consumesApis")
+	namespace    := fs.String("namespace", "default", "Backstage namespace")
+	token        := fs.String("token", "", "Backstage Bearer token (env: BACKSTAGE_TOKEN)")
+	source       := fs.String("source", ".", "Source directory to scan")
+	format       := fs.String("format", "text", "Output format: text, json, junit")
+	errorAfter   := fs.String("error-after", "", "Grace period override (e.g. 90d); defaults to the Backstage GovernancePolicy if configured")
+	failOnWarn   := fs.Bool("fail-on-warn", false, "Exit 1 on warnings as well as errors")
 
-if err := fs.Parse(args); err != nil {
-if err == flag.ErrHelp {
-return nil
-}
-return err
-}
-if *backstageURL == "" {
-return fmt.Errorf("--backstage-url is required")
-}
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil
+		}
+		return err
+	}
+	if *backstageURL == "" {
+		return fmt.Errorf("--backstage-url is required")
+	}
 
-outFormat, err := reporter.ParseFormat(*format)
-if err != nil {
-return err
-}
+	outFormat, err := reporter.ParseFormat(*format)
+	if err != nil {
+		return err
+	}
 
-var gracePeriod time.Duration
-if *errorAfter != "" {
-gracePeriod, err = parseDuration(*errorAfter)
-if err != nil {
-return fmt.Errorf("--error-after: %w", err)
-}
-}
+	absSource, err := filepath.Abs(*source)
+	if err != nil {
+		return fmt.Errorf("resolve source path: %w", err)
+	}
 
-absSource, err := filepath.Abs(*source)
-if err != nil {
-return fmt.Errorf("resolve source path: %w", err)
-}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
-ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-defer cancel()
+	client := newBackstageClient(*backstageURL, *token, os.Getenv("BACKSTAGE_TOKEN"))
 
-client := newBackstageClient(*backstageURL, *token, os.Getenv("BACKSTAGE_TOKEN"))
+	// Resolve governance policy: Backstage catalog → CLI flag overrides.
+	failOnWarnSet := isFlagSet(fs, "fail-on-warn")
+	pol, err := resolvePolicy(ctx, client, *component, *namespace, *errorAfter, *failOnWarn, failOnWarnSet)
+	if err != nil {
+		return err
+	}
+	gracePeriod := pol.GracePeriod
 
-var findings []reporter.Finding
+	var findings []reporter.Finding
 
 // ── Check 2: Removed APIs ─────────────────────────────────────────────────
 // Any API declared in consumesApis that no longer exists in the catalog.
@@ -241,7 +241,7 @@ return fmt.Errorf("write report: %w", err)
 }
 
 errors, warnings := countSeverities(findings)
-if errors > 0 || (*failOnWarn && warnings > 0) {
+if errors > 0 || (pol.FailOnWarn && warnings > 0) {
 os.Exit(exitViolations)
 }
 return nil

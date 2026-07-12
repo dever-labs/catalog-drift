@@ -1,0 +1,1 @@
+export { ApiGovernanceCard } from './ApiGovernanceCard';

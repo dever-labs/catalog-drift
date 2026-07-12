@@ -2,6 +2,7 @@ package main
 
 import (
 "context"
+"flag"
 "fmt"
 "os"
 "path/filepath"
@@ -128,4 +129,84 @@ warnings++
 }
 }
 return
+}
+
+// isFlagSet reports whether the named flag was explicitly set by the caller.
+func isFlagSet(fs *flag.FlagSet, name string) bool {
+found := false
+fs.Visit(func(f *flag.Flag) {
+if f.Name == name {
+found = true
+}
+})
+return found
+}
+
+// resolvedPolicy holds the merged result of a Backstage GovernancePolicy and
+// CLI flag overrides. CLI flags always win over the catalog policy.
+type resolvedPolicy struct {
+GracePeriod time.Duration // 0 means no error escalation
+FailOnWarn  bool
+}
+
+// resolvePolicy fetches the GovernancePolicy from Backstage (if any) and merges
+// it with the CLI flags. CLI flags are represented as pointers: a non-nil pointer
+// means the user explicitly set the flag, which always overrides the catalog value.
+//
+// component may be empty; if so, no Backstage lookup is performed and the
+// returned policy contains only the CLI flag values.
+func resolvePolicy(
+ctx context.Context,
+client *backstage.Client,
+component, namespace string,
+cliErrorAfter string, // "" = not set
+cliFailOnWarn bool,
+cliFailOnWarnSet bool, // whether --fail-on-warn was explicitly passed
+) (resolvedPolicy, error) {
+p := resolvedPolicy{FailOnWarn: cliFailOnWarn}
+
+// Parse CLI error-after first (used as fallback when no catalog policy).
+var cliGrace time.Duration
+if cliErrorAfter != "" {
+var err error
+cliGrace, err = parseDuration(cliErrorAfter)
+if err != nil {
+return p, fmt.Errorf("--error-after: %w", err)
+}
+}
+
+if component == "" {
+p.GracePeriod = cliGrace
+return p, nil
+}
+
+policy, err := client.FetchGovernancePolicy(ctx, component, namespace)
+if err != nil {
+// Non-fatal: log and proceed with CLI values only.
+fmt.Fprintf(os.Stderr, "warning: could not fetch governance policy: %v\n", err)
+p.GracePeriod = cliGrace
+return p, nil
+}
+
+if policy != nil {
+// Apply Backstage policy as the base.
+if policy.Spec.Deprecation.ErrorAfter != "" {
+if d, err := parseDuration(policy.Spec.Deprecation.ErrorAfter); err == nil {
+	p.GracePeriod = d
+}
+}
+if policy.Spec.Contract.FailOnWarn {
+p.FailOnWarn = true
+}
+}
+
+// CLI flags override catalog values.
+if cliErrorAfter != "" {
+p.GracePeriod = cliGrace
+}
+if cliFailOnWarnSet {
+p.FailOnWarn = cliFailOnWarn
+}
+
+return p, nil
 }

@@ -1,0 +1,32 @@
+{
+  "name": "@dever-labs/backstage-plugin-catalog-drift",
+  "version": "0.1.0",
+  "description": "Backstage plugin for catalog-drift API governance — configure deprecation policies and track contract health from the portal.",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "backstage-cli package build",
+    "lint": "backstage-cli package lint",
+    "test": "backstage-cli package test",
+    "clean": "backstage-cli package clean",
+    "start": "backstage-cli package start"
+  },
+  "keywords": ["backstage", "plugin", "api-governance", "catalog-drift"],
+  "peerDependencies": {
+    "@backstage/core-components": "^0.14.0",
+    "@backstage/core-plugin-api": "^1.9.0",
+    "@backstage/catalog-model": "^1.4.0",
+    "react": "^18.0.0"
+  },
+  "devDependencies": {
+    "@backstage/cli": "^0.26.0",
+    "@backstage/core-components": "^0.14.0",
+    "@backstage/core-plugin-api": "^1.9.0",
+    "@backstage/catalog-model": "^1.4.0",
+    "@backstage/test-utils": "^1.5.0",
+    "@testing-library/react": "^14.0.0",
+    "@testing-library/user-event": "^14.0.0",
+    "typescript": "^5.3.0"
+  },
+  "files": ["dist"],
+  "license": "Apache-2.0"
+}
