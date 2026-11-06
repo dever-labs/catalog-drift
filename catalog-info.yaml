@@ -1,0 +1,58 @@
+# Describes this repository in devhub (https://hub.dever.dk), dever-labs'
+# developer portal. devhub's GitHub discovery reads this file from the
+# default branch; docs come from docs/ (backstage.io/techdocs-ref).
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: catalog-drift
+  namespace: devtools
+  title: catalog-drift
+  description: API contract drift and deprecation detection against the Backstage catalog, for CI pipelines.
+  annotations:
+    github.com/project-slug: dever-labs/catalog-drift
+    backstage.io/techdocs-ref: dir:.
+spec:
+  owner: group:devtools/engineering
+  domain: domain:devtools/devtools
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: catalog-drift
+  namespace: devtools
+  title: catalog-drift
+  description: >
+    Governance CLI (cmd/catalog-drift) and GitHub Action run in CI — checks
+    code and specs against the registered API contracts (check), flags
+    deprecated API usage (deprecated) and lists consumers (consumers).
+  annotations:
+    github.com/project-slug: dever-labs/catalog-drift
+    backstage.io/techdocs-ref: dir:.
+  tags: [go, cli, github-action]
+  links:
+    - url: https://github.com/dever-labs/catalog-drift/blob/main/docs/pipeline.md
+      title: Pipeline integration
+spec:
+  type: tool
+  lifecycle: experimental
+  owner: group:devtools/engineering
+  system: system:devtools/catalog-drift
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: catalog-drift-backstage-plugin
+  namespace: devtools
+  title: catalog-drift Backstage plugin
+  description: >
+    @dever-labs/backstage-plugin-catalog-drift (plugins/catalog-drift) —
+    GovernancePolicy admin page and API governance card.
+  annotations:
+    github.com/project-slug: dever-labs/catalog-drift
+    backstage.io/source-location: url:https://github.com/dever-labs/catalog-drift/tree/main/plugins/catalog-drift
+  tags: [typescript, backstage-plugin]
+spec:
+  type: library
+  lifecycle: experimental
+  owner: group:devtools/engineering
+  system: system:devtools/catalog-drift
