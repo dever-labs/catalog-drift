@@ -1,0 +1,4 @@
+site_name: catalog-drift
+docs_dir: docs
+plugins:
+  - techdocs-core
